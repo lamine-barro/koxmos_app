@@ -44,6 +44,7 @@ function validProposal(proposal, currentLevel, evaluation) {
 
 const koraToolDefinitions = [
   { name: 'get_talent_skill_context', description: 'Obtient le contexte minimal de compétence du talent pour cette conversation.', parameters_schema: { type: 'object', properties: {} } },
+  { name: 'record_assessment_answer', description: 'Enregistre une réponse vocale dans une évaluation Koxmos active.', parameters_schema: { type: 'object', properties: { success: { type: 'boolean' }, explanation: { type: 'string', minLength: 30, maxLength: 600 } }, required: ['success', 'explanation'] } },
   { name: 'propose_passport_update', description: 'Propose, sans appliquer, une mise à jour du niveau après des preuves observées.', parameters_schema: { type: 'object', properties: { level: { type: 'string', enum: ['Débutant', 'Intermédiaire', 'Avancé', 'Expert'] }, confidence: { type: 'number', minimum: 0, maximum: 1 }, evidence: { type: 'string', minLength: 20, maxLength: 800 }, next_exercise: { type: 'string', minLength: 10, maxLength: 400 } }, required: ['level', 'confidence', 'evidence', 'next_exercise'] } },
 ];
 
@@ -71,7 +72,7 @@ async function agentForIvorianVoice(voice) {
     content_guardrail_enabled: true,
     focus_guardrail_enabled: true,
     first_message: 'Bonjour. Sur quelle situation concrète souhaitez-vous travailler ?',
-    system_prompt: 'Tu es le tuteur vocal Koxmos. Parle uniquement en français. Au début de chaque échange, appelle get_talent_skill_context et reprends la conversation sans te présenter à nouveau. Aide la personne à progresser sur une situation réelle avec des réponses courtes, concrètes et encourageantes. Explique le raisonnement et la difficulté de chaque exercice. N’invente jamais une modification de son passeport et ne demande jamais d’envoyer un audio ou une pièce jointe.',
+    system_prompt: 'Tu es le tuteur vocal Koxmos. Parle uniquement en français. Au début de chaque échange, appelle get_talent_skill_context et reprends la conversation sans te présenter à nouveau. Aide la personne à progresser sur une situation réelle avec des réponses courtes, concrètes et encourageantes. Explique le raisonnement et la difficulté de chaque exercice. Si une évaluation à cinq questions est active, appelle record_assessment_answer après chaque réponse puis explique le résultat et pose une seule question suivante. N’invente jamais une modification de son passeport et ne demande jamais d’envoyer un audio ou une pièce jointe.',
   };
   const agent = existing ? await aethex.updateAgent(existing.id, config) : await aethex.createAgent(config);
   await ensureKoraTools(agent.id);
@@ -280,8 +281,14 @@ app.post('/v1/kora/tool', (request, response) => {
   const link = koraSessions.get(request.body?.conversation_id);
   if (!link) return response.status(404).json({ error: 'Conversation Kora inconnue.' });
   const args = request.body?.arguments || {};
-  if (typeof args.level === 'string' && typeof args.confidence === 'number' && typeof args.evidence === 'string') { const proposal = { level: args.level, confidence: Math.max(0, Math.min(1, args.confidence)), evidence: args.evidence.slice(0, 800), nextExercise: typeof args.next_exercise === 'string' ? args.next_exercise.slice(0, 400) : '' }; if (!validProposal(proposal, link.level)) return response.status(422).json({ error: 'Proposition pédagogique insuffisante ou saut de niveau interdit.' }); link.proposal = proposal; return response.json({ accepted_for_auto_update: true, message: 'Proposition validée pour la mise à jour locale du passeport.' }); }
   const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
+  if (typeof args.success === 'boolean' && typeof args.explanation === 'string') {
+    if (!learning?.evaluation?.active) return response.status(422).json({ error: 'Aucune évaluation active.' });
+    const questionCount = Math.min(5, learning.evaluation.questionCount + 1); const consecutiveSuccesses = args.success ? learning.evaluation.consecutiveSuccesses + 1 : 0; const completed = questionCount === 5;
+    learning.evaluation = { active: !completed, questionCount, consecutiveSuccesses, completed, passed: completed && consecutiveSuccesses === 5, feedback: args.explanation.slice(0, 600), updatedAt: now() }; updateLearningSummary(learning);
+    return response.json({ evaluation: learning.evaluation, message: 'Réponse vocale enregistrée.' });
+  }
+  if (typeof args.level === 'string' && typeof args.confidence === 'number' && typeof args.evidence === 'string') { const proposal = { level: args.level, confidence: Math.max(0, Math.min(1, args.confidence)), evidence: args.evidence.slice(0, 800), nextExercise: typeof args.next_exercise === 'string' ? args.next_exercise.slice(0, 400) : '' }; if (!validProposal(proposal, link.level, learning?.evaluation)) return response.status(422).json({ error: 'Proposition pédagogique insuffisante ou saut de niveau interdit.' }); link.proposal = proposal; return response.json({ accepted_for_auto_update: true, message: 'Proposition validée pour la mise à jour locale du passeport.' }); }
   return response.json({ skill: link.skill, current_level: link.level, latest_summary: learning?.summary || link.summary || 'Aucune évaluation enregistrée.', evaluation: learning?.evaluation, rule: 'Explique de manière pédagogique. Une progression requiert cinq réussites consécutives, vérifiées par Koxmos.' });
 });
 app.get('/v1/kora/:sessionId/proposal', requireDevice, (request, response) => { const link = koraSessions.get(request.params.sessionId); if (!link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session Kora introuvable.' }); return response.json({ proposal: link.proposal }); });
