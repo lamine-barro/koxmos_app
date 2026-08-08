@@ -247,7 +247,7 @@ app.post('/v1/kora/connect', requireDevice, async (request, response) => {
   const learning = typeof request.body?.learningSessionId === 'string' ? learningSession(request.body.learningSessionId, request.deviceId) : null;
   if (typeof request.body?.learningSessionId === 'string' && !learning) return response.status(404).json({ error: 'Conversation pédagogique introuvable.' });
   const voiceId = typeof request.body?.voiceId === 'string' && /^[0-9a-f-]{36}$/i.test(request.body.voiceId) ? request.body.voiceId : '';
-  let agentId = (tutorKey && process.env[`AETHEX_TUTOR_${tutorKey}_AGENT_ID`]) || process.env.AETHEX_DEFAULT_AGENT_ID;
+  let agentId = tutorKey && process.env[`AETHEX_TUTOR_${tutorKey}_AGENT_ID`];
   if (voiceId) {
     try {
       const voices = Array.from(await aethex.listVoices({ language: 'french', limit: 100 }));
@@ -256,7 +256,7 @@ app.post('/v1/kora/connect', requireDevice, async (request, response) => {
       agentId = await agentForIvorianVoice(voice);
     } catch { return response.status(502).json({ error: 'Préparation de la voix Kora impossible.' }); }
   }
-  if (!agentId) return response.status(503).json({ error: 'Aucun tuteur Kora n’est encore configuré. Définissez AETHEX_DEFAULT_AGENT_ID.' });
+  if (!agentId) return response.status(503).json({ error: 'La voix de ce tuteur n’est pas encore disponible. Réessayez dans un instant.' });
   try { const session = await aethex.conversationConnect({ agent_id: agentId }); koraSessions.set(session.session_id, { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billingSession.skill, level: learning?.level || (typeof request.body?.level === 'string' ? request.body.level.slice(0, 30) : 'non évalué'), summary: learning?.summary || (typeof request.body?.summary === 'string' ? request.body.summary.slice(0, 400) : ''), createdAt: now(), proposal: null }); return response.status(201).json({ sessionId: session.session_id, iceConfig: session.ice_config }); }
   catch { return response.status(502).json({ error: 'Connexion Kora impossible.' }); }
 });
