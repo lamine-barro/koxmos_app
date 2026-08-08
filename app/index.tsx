@@ -55,7 +55,7 @@ export default function HomeScreen() {
   function notify(title: string, message?: string, tone: 'success' | 'info' = 'success') {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice({ title, message, tone });
-    noticeTimer.current = setTimeout(() => setNotice(null), 4500);
+    noticeTimer.current = setTimeout(() => setNotice(null), 3000);
   }
 
   function view(content: React.ReactNode) {
@@ -122,6 +122,7 @@ export default function HomeScreen() {
       if (reply.evaluation && selected) {
         const next = await setEvaluationProgress(selected.id, reply.evaluation);
         setSkills(next); setSelected(next.find((item) => item.id === selected.id));
+        notify('Mise à jour réussie', `Évaluation enregistrée : ${reply.evaluation.questionCount}/5 · série ${reply.evaluation.consecutiveSuccesses}/5.`);
       }
       if (reply.wallet) setWallet(reply.wallet);
       if (reply.chargedCredits) notify('0,25 crédit débité', 'Une réponse du tuteur texte coûte 25 FCFA.');
@@ -129,7 +130,7 @@ export default function HomeScreen() {
         const proposal = { ...reply.proposal, assessedAt: new Date().toISOString(), tutor: 'Koxmos AI' };
         Alert.alert('Proposition de niveau', `${proposal.level} · ${Math.round(proposal.confidence * 100)} %\n\n${proposal.evidence}`, [
           { text: 'Ignorer', style: 'cancel' },
-          { text: 'Valider', onPress: async () => { const next = await applyAssessment(selected.id, proposal); setSkills(next); setSelected(next.find((item) => item.id === selected.id)); notify('Niveau mis à jour', 'La validation est enregistrée dans votre passeport.'); } },
+          { text: 'Valider', onPress: async () => { const next = await applyAssessment(selected.id, proposal); setSkills(next); setSelected(next.find((item) => item.id === selected.id)); notify('Mise à jour réussie', 'Le nouveau niveau est enregistré dans votre passeport.'); } },
         ]);
       }
     } catch (error) { notify('Tuteur indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); } finally { setWorking(false); }
@@ -139,6 +140,7 @@ export default function HomeScreen() {
     if (!selected) return notify('Choisissez une compétence', 'Sélectionnez d’abord la compétence à évaluer.', 'info');
     const next = await setEvaluationProgress(selected.id, { active: true, questionCount: 0, consecutiveSuccesses: 0, completed: false, passed: false, updatedAt: new Date().toISOString() });
     setSkills(next); setSelected(next.find((skill) => skill.id === selected.id));
+    notify('Mise à jour réussie', 'Évaluation en 5 questions démarrée.');
     setMessages((items) => [...items, { role: 'tuteur', text: `Évaluation en 5 questions pour « ${selected.name} ». Je vérifierai une réussite à la fois et j’expliquerai chaque réponse. Question 1/5 : décris une situation réelle où tu as utilisé cette compétence, puis explique ton choix principal.` }]);
   }
 
