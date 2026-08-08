@@ -329,9 +329,9 @@ function Toast({ notice, dismiss }: { notice: Notice; dismiss: () => void }) { c
 const canvas = StyleSheet.create({
   scroll: { flex: 1 }, content: { flexGrow: 1, justifyContent: 'flex-end', paddingHorizontal: 20, paddingVertical: 18, gap: 16 },
   empty: { color: '#6B7280', fontSize: 18, lineHeight: 27, textAlign: 'center', marginVertical: 'auto' }, darkEmpty: { color: '#D4D4D4' },
-  message: { alignSelf: 'stretch', borderRadius: 20, paddingHorizontal: 18, paddingVertical: 15, gap: 7 }, tutor: { backgroundColor: '#F3F4F6' }, talent: { backgroundColor: '#111827' }, darkMessage: { backgroundColor: '#1C1C1C', borderWidth: 1, borderColor: '#353535' }, darkTalent: { backgroundColor: '#FFFFFF' },
-  label: { color: '#6B7280', fontSize: 11, fontWeight: '900', letterSpacing: 1.2, textAlign: 'center' }, darkLabel: { color: '#A3A3A3' },
-  text: { color: '#111827', fontSize: 20, lineHeight: 29, fontWeight: '600', textAlign: 'center' }, darkText: { color: '#FFFFFF' }, darkTalentText: { color: '#111827' },
+  message: { maxWidth: '88%', borderRadius: 20, paddingHorizontal: 18, paddingVertical: 15, gap: 7 }, tutor: { alignSelf: 'flex-start', backgroundColor: '#F3F4F6' }, talent: { alignSelf: 'flex-end', backgroundColor: '#111827' }, darkMessage: { backgroundColor: '#1C1C1C', borderWidth: 1, borderColor: '#353535' }, darkTalent: { backgroundColor: '#FFFFFF' },
+  label: { color: '#6B7280', fontSize: 11, fontWeight: '900', letterSpacing: 1.2, textAlign: 'left' }, darkLabel: { color: '#A3A3A3' },
+  text: { color: '#111827', fontSize: 20, lineHeight: 29, fontWeight: '600', textAlign: 'left' }, darkText: { color: '#FFFFFF' }, darkTalentText: { color: '#111827' },
 });
 
 const voice = StyleSheet.create({
