@@ -1,0 +1,15 @@
+{
+  "name": "koxmos-local-agent-broker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "bootstrap:kora": "node scripts/bootstrap-kora.mjs"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.14.3",
+    "aethexai": "^1.0.0",
+    "express": "^5.1.0",
+    "zod": "^4.4.3"
+  }
+}

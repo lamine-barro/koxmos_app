@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Koxmos",
+    "slug": "koxmos-app",
+    "scheme": "koxmos",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.koxmos.os",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Autorisez Koxmos à utiliser le microphone pour échanger avec votre tuteur vocal."
+      }
+    },
+    "android": {
+      "package": "com.koxmos.os",
+      "permissions": ["RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS", "POST_NOTIFICATIONS"]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Autorisez Koxmos à utiliser Face ID pour protéger votre passeport local."
+        }
+      ],
+      "expo-notifications"
+    ]
+  }
+}
