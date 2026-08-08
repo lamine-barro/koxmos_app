@@ -155,6 +155,25 @@ export default function HomeScreen() {
     catch (error) { notify('Conversation indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); return undefined; }
   }
 
+  function chooseTutor(nextTutor: Tutor) {
+    setTutor(nextTutor);
+    setLearningSession(undefined);
+    setMessages([]);
+    notify(`${nextTutor.name} est votre tuteur`);
+  }
+
+  function chooseSkill(skill: Skill) {
+    setSelected(skill);
+    if (!tutor) {
+      setPage('home');
+      notify('Choisissez votre tuteur', 'Sélectionnez d’abord la personnalité qui vous accompagnera.', 'info');
+      return;
+    }
+    setLearningSession(undefined);
+    setMessages([]);
+    setPage('voice');
+  }
+
   async function openWallet() { try { setWallet(await loadWallet()); setPage('wallet'); } catch (error) { notify('Temps indisponible', error instanceof Error ? error.message : 'Broker non configuré', 'info'); } }
   async function exportPassport() {
     if (!profile) return;
@@ -184,7 +203,7 @@ export default function HomeScreen() {
 
   if (page === 'profile') return view(<ProfileScreen profile={profile} save={async (name, nextCountry) => { const updated = await saveProfile(name, nextCountry); setProfile(updated); notify('Profil enregistré'); }} exportPassport={() => setPage('transfer')} deletePassport={async () => { await deleteRemoteAccount(); await deleteLocalPassport(); setProfile(null); setSkills([]); setSelected(undefined); setTutor(undefined); setWallet(null); setFirstName(''); setCountry('CI'); setPage('home'); }} back={() => setPage('home')} />);
 
-  if (page === 'search') return view(<SkillSearchScreen skills={skills} query={skillSearch} onQueryChange={setSkillSearch} select={(skill) => { setSelected(skill); setSkillSearch(''); setSkillSearchOpen(false); setPage('home'); notify(`${skill.name} sélectionnée`); }} back={() => { setSkillSearch(''); setSkillSearchOpen(false); setPage('home'); }} />);
+  if (page === 'search') return view(<SkillSearchScreen skills={skills} query={skillSearch} onQueryChange={setSkillSearch} select={(skill) => { setSkillSearch(''); setSkillSearchOpen(false); chooseSkill(skill); }} back={() => { setSkillSearch(''); setSkillSearchOpen(false); setPage('home'); }} />);
 
   if (page === 'text') return view(<ChatScreen selected={selected} tutor={tutor} messages={messages} draft={draft} working={working} setDraft={setDraft} back={() => setPage('home')} switchToVoice={() => setPage('voice')} startAssessment={beginAssessment} chat={chat} />);
   if (page === 'voice') return view(<Voice skill={selected} tutor={tutor || catalogTutors[0] || tutorsForCountry(profile.country)[0]} learningSession={learningSession} ensureLearningSession={ensureLearningSession} messages={messages} setMessages={setMessages} onFlame={setFlame} back={() => setPage('home')} draft={draft} setDraft={setDraft} working={working} chat={chat} notify={notify} />);
@@ -202,11 +221,11 @@ export default function HomeScreen() {
       flame={flame}
       wallet={wallet}
       openWallet={openWallet}
-      selectTutor={(nextTutor) => { if (!selected) return notify('Choisissez une compétence', 'Sélectionnez une compétence avant le tuteur.', 'info'); setTutor(nextTutor); setLearningSession(undefined); setMessages([]); setPage('voice'); }}
+      selectTutor={chooseTutor}
       openProfile={() => setPage('profile')}
       openSearch={() => setSkillSearchOpen(true)}
       addSkill={() => setPage('skill')}
-      selectSkill={(skill) => { setSelected(skill); notify(`${skill.name} sélectionnée`); }}
+      selectSkill={chooseSkill}
       toggleHidden={async (skill) => { const next = await setSkillHidden(skill.id, !skill.isHidden); setSkills(next); setSelected(next.find((item) => item.id === skill.id)); notify(skill.isHidden ? 'Compétence affichée' : 'Compétence masquée'); }}
       removeSkill={(skill) => Alert.alert('Supprimer cette compétence ?', `${skill.name} sera retirée de ce passeport.`, [{ text: 'Annuler', style: 'cancel' }, { text: 'Supprimer', style: 'destructive', onPress: async () => { const next = await removeSkill(skill.id); setSkills(next); if (selected?.id === skill.id) setSelected(next[0]); notify('Compétence supprimée'); } }])}
     />;
