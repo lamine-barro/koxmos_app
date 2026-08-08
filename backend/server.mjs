@@ -232,8 +232,10 @@ app.post('/v1/assessments', requireDevice, async (request, response) => {
   const { skill, transcript } = request.body ?? {};
   if (typeof skill !== 'string' || !skill.trim() || typeof transcript !== 'string' || transcript.trim().length < 20) return response.status(400).json({ error: 'Une compétence et suffisamment de contenu sont requis.' });
   try {
-    const upstream = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, store: false, instructions: 'Évalue avec prudence une compétence. Réponds UNIQUEMENT avec un JSON valide : {"level":"Débutant|Intermédiaire|Avancé|Expert","confidence":nombre entre 0 et 1,"evidence":"résumé factuel de moins de 400 caractères"}. Ne surévalue jamais sur la base d’une seule affirmation.', input: `Compétence : ${skill.slice(0, 80)}\nÉchange : ${transcript.slice(0, 6000)}` }) });
-    const data = await upstream.json(); const parsed = JSON.parse(data.output_text || '{}');
+    const assessor = new Agent({ name: 'Koxmos Skill Assessor', model, instructions: 'Évalue avec prudence une compétence. Réponds UNIQUEMENT avec un objet JSON valide, sans balise Markdown : {"level":"Débutant|Intermédiaire|Avancé|Expert","confidence":nombre entre 0 et 1,"evidence":"résumé factuel de moins de 400 caractères"}. Ne surévalue jamais sur la base d’une seule affirmation.' });
+    const result = await run(assessor, `Compétence : ${skill.slice(0, 80)}\nÉchange : ${transcript.slice(0, 6000)}`, { tracingDisabled: true });
+    const raw = String(result.finalOutput || '').trim().replace(/^```json\s*|\s*```$/g, '');
+    const parsed = JSON.parse(raw || '{}');
     if (!['Débutant', 'Intermédiaire', 'Avancé', 'Expert'].includes(parsed.level) || typeof parsed.evidence !== 'string' || typeof parsed.confidence !== 'number') throw new Error('invalid assessment');
     return response.json({ level: parsed.level, confidence: Math.max(0, Math.min(1, parsed.confidence)), evidence: parsed.evidence.slice(0, 800), tutor: 'Koxmos AI' });
   } catch { return response.status(502).json({ error: 'L’évaluation n’a pas pu être produite. Aucun niveau n’a été modifié.' }); }
