@@ -42,8 +42,9 @@ export async function startKoraConversation(input: { billingSessionId: string; l
   const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId }) });
   const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
   const peer = new RTCPeerConnection((bootstrap.iceConfig || {}) as any);
-  let peerConnectionId = ''; const pendingCandidates: unknown[] = [];
+  let peerConnectionId = ''; const pendingCandidates: Array<{ candidate: string; sdp_mid: string; sdp_mline_index: number }> = []; let iceTimer: ReturnType<typeof setTimeout> | undefined;
   const flushCandidates = async () => { if (!peerConnectionId || !pendingCandidates.length) return; const candidates = pendingCandidates.splice(0, pendingCandidates.length); await broker(`/v1/kora/${bootstrap.sessionId}/ice`, { method: 'POST', body: JSON.stringify({ pc_id: peerConnectionId, candidates }) }); };
+  const scheduleIceFlush = () => { if (!peerConnectionId) return; if (iceTimer) clearTimeout(iceTimer); iceTimer = setTimeout(() => { iceTimer = undefined; void flushCandidates(); }, 200); };
   stream.getTracks().forEach((track) => peer.addTrack(track, stream));
   peer.ontrack = (event: any) => { if (event.streams[0]) input.onRemoteStream(event.streams[0]); };
   peer.ondatachannel = (event: any) => {
@@ -53,7 +54,12 @@ export async function startKoraConversation(input: { billingSessionId: string; l
     };
   };
   peer.onconnectionstatechange = () => input.onStatus(peer.connectionState);
-  peer.onicecandidate = (event: any) => { if (!event.candidate) return; pendingCandidates.push(event.candidate.toJSON()); void flushCandidates(); };
+  peer.onicecandidate = (event: any) => {
+    const candidate = event.candidate;
+    if (!candidate?.candidate) return;
+    pendingCandidates.push({ candidate: candidate.candidate, sdp_mid: candidate.sdpMid || '', sdp_mline_index: candidate.sdpMLineIndex || 0 });
+    scheduleIceFlush();
+  };
   const offer = await peer.createOffer({ offerToReceiveAudio: true }); await peer.setLocalDescription(offer);
   const answer = await broker<{ sdp: string; type?: string; pc_id: string }>(`/v1/kora/${bootstrap.sessionId}/offer`, { method: 'POST', body: JSON.stringify({ sdp: offer.sdp }) });
   peerConnectionId = answer.pc_id; await peer.setRemoteDescription(new RTCSessionDescription({ type: answer.type || 'answer', sdp: answer.sdp })); await flushCandidates();
@@ -76,7 +82,7 @@ export async function startKoraConversation(input: { billingSessionId: string; l
       if (closePromise) return closePromise;
       closePromise = (async () => {
         // Release local audio immediately, even if the provider is unavailable.
-        clearInterval(meter);
+        clearInterval(meter); if (iceTimer) clearTimeout(iceTimer);
         stream.getTracks().forEach((track) => track.stop());
         peer.close();
         await broker(`/v1/kora/${bootstrap.sessionId}/end`, { method: 'POST' });

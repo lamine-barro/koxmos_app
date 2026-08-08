@@ -266,7 +266,8 @@ app.post('/v1/kora/:sessionId/offer', requireDevice, async (request, response) =
 });
 app.post('/v1/kora/:sessionId/ice', requireDevice, async (request, response) => {
   const link = koraSessions.get(request.params.sessionId); if (!aethex || !link || link.device !== request.deviceId || !request.body?.pc_id || !Array.isArray(request.body?.candidates)) return response.status(400).json({ error: 'Candidat ICE invalide.' });
-  try { await aethex.sendIceCandidate(request.params.sessionId, { pc_id: request.body.pc_id, candidates: request.body.candidates.slice(0, 20) }); return response.status(204).end(); } catch { return response.status(502).json({ error: 'ICE Kora impossible.' }); }
+  try { await aethex.sendIceCandidate(request.params.sessionId, { pc_id: request.body.pc_id, candidates: request.body.candidates.slice(0, 20) }); return response.status(204).end(); }
+  catch (error) { console.error('Kora ICE forwarding failed', { sessionId: request.params.sessionId, error: error instanceof Error ? error.message : String(error) }); return response.status(502).json({ error: 'ICE Kora impossible.' }); }
 });
 app.post('/v1/kora/:sessionId/end', requireDevice, async (request, response) => {
   const link = koraSessions.get(request.params.sessionId); if (!aethex || !link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session Kora introuvable.' });
