@@ -34,12 +34,12 @@ function reportsOf(stats: unknown) {
   return Object.values(stats as Record<string, Record<string, unknown>>);
 }
 
-export async function startKoraConversation(input: { billingSessionId: string; level: string; summary?: string; tutor?: string; voiceId?: string; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
+export async function startKoraConversation(input: { billingSessionId: string; learningSessionId?: string; level: string; summary?: string; tutor?: string; voiceId?: string; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
   if (!NativeModules.WebRTCModule && !NativeModules.RTCModule) {
     throw new Error('La fonction vocale nécessite une version récente de Koxmos sur ce téléphone.');
   }
   const { mediaDevices, RTCPeerConnection, RTCSessionDescription } = require('react-native-webrtc') as typeof import('react-native-webrtc');
-  const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId }) });
+  const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId }) });
   const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
   const peer = new RTCPeerConnection((bootstrap.iceConfig || {}) as any);
   let peerConnectionId = ''; const pendingCandidates: unknown[] = [];

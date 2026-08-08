@@ -4,6 +4,8 @@ import type { TutorKey } from './tutors';
 import { readLocal, writeLocal } from './storage';
 
 export type AgentReply = { text: string; source: 'local-demo' | 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number };
+export type LearningMessage = { id: string; role: 'talent' | 'tuteur'; text: string; mode: 'text' | 'voice'; createdAt: string };
+export type LearningSession = { id: string; skill: string; level: SkillLevel; tutor: string; summary: string; evaluation: EvaluationProgress; messages: LearningMessage[]; updatedAt: string };
 export type Wallet = { balanceFcfa: number; balanceMilliXof: number; balanceCredits: number; creditSeconds: number; pricePerMinuteFcfa: number; textRequestCreditCost: number; updatedAt: string };
 export type VoiceSession = { id: string; startedAt: string; pricePerMinuteFcfa: number; voiceConfigured: boolean };
 export type AethexVoice = { id: string; name: string; language: string; gender?: string; country?: string; supportsDialectStyle?: boolean };
@@ -25,8 +27,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-export async function askTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; evaluation?: EvaluationProgress; message: string }): Promise<AgentReply> {
-  if (endpoint) { const data = await request<{ text: string; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number }>('/v1/text', { method: 'POST', body: JSON.stringify(input) }); return { text: data.text, source: 'server', proposal: data.proposal, evaluation: data.evaluation, wallet: data.wallet, chargedCredits: data.chargedCredits }; }
+export async function createLearningSession(input: { skill: string; level: SkillLevel; tutor: string }): Promise<LearningSession> { return (await request<{ session: LearningSession }>('/v1/learning/sessions', { method: 'POST', body: JSON.stringify(input) })).session; }
+export async function startLearningEvaluation(id: string): Promise<LearningSession> { return (await request<{ session: LearningSession }>(`/v1/learning/${id}/evaluation`, { method: 'POST' })).session; }
+export async function recordLearningEvent(id: string, event: { role: 'talent' | 'tuteur'; text: string; mode: 'text' | 'voice' }): Promise<LearningSession> { return (await request<{ session: LearningSession }>(`/v1/learning/${id}/events`, { method: 'POST', body: JSON.stringify(event) })).session; }
+export async function askTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; learningSessionId?: string; message: string }): Promise<AgentReply & { session?: LearningSession }> {
+  if (endpoint) { const data = await request<{ text: string; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; session?: LearningSession; wallet?: Wallet; chargedCredits?: number }>('/v1/text', { method: 'POST', body: JSON.stringify(input) }); return { text: data.text, source: 'server', proposal: data.proposal, evaluation: data.evaluation, session: data.session, wallet: data.wallet, chargedCredits: data.chargedCredits }; }
   const focus = input.skill ? ` sur « ${input.skill} »` : '';
   return { source: 'local-demo', text: `Très bien, ${input.firstName}. Donne-moi un exemple réel${focus} : quel était le contexte, quelle décision as-tu prise et quel résultat as-tu obtenu ?` };
 }

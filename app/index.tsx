@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, Circle, Eye, EyeOff, Flame, MessageCircle, Mic as LucideMic, Plus, Search, Trash2, UserRound, Wallet, X } from 'lucide-react-native';
-import { addTestCredit, askTextTutor, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadAethexVoices, loadFlame, loadWallet, recordPractice, requestRecharge, startVoiceSession, type Wallet as WalletData } from '../core/agent';
+import { addTestCredit, askTextTutor, createLearningSession, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadAethexVoices, loadFlame, loadWallet, recordLearningEvent, recordPractice, requestRecharge, startLearningEvaluation, startVoiceSession, type LearningSession, type Wallet as WalletData } from '../core/agent';
 import { startKoraConversation } from '../core/kora';
 import { sendLocalNotification } from '../core/notifications';
 import { addSkill, applyAssessment, createTransferCode, importTransferCode, loadSkills, removeSkill, searchSkills, setEvaluationProgress, setSkillHidden, type Skill } from '../core/passport';
@@ -41,6 +41,7 @@ export default function HomeScreen() {
   const [skillSearchOpen, setSkillSearchOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [learningSession, setLearningSession] = useState<LearningSession>();
   const [working, setWorking] = useState(false);
   const [wallet, setWallet] = useState<WalletData | null>(null);
   const [flame, setFlame] = useState(0);
@@ -79,7 +80,7 @@ export default function HomeScreen() {
         setSkills(await loadSkills());
         setFlame(await loadFlame().catch(() => 0));
         setWallet(await loadWallet().catch(() => null));
-        if (stored) setPage('voice');
+        if (stored) setPage('home');
       }
     })().catch(() => setProfile(null));
     return () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); };
@@ -99,7 +100,7 @@ export default function HomeScreen() {
     setWorking(true);
     try {
       setProfile(await saveProfile(firstName, country));
-      setPage('voice');
+      setPage('home');
       notify('Passeport créé', 'Votre profil est enregistré uniquement sur cet appareil.');
       void sendLocalNotification('Bienvenue dans Koxmos', 'Votre passeport de compétences est prêt.');
     } catch (error) { Alert.alert('Profil', error instanceof Error ? error.message : 'Erreur'); } finally { setWorking(false); }
@@ -115,10 +116,11 @@ export default function HomeScreen() {
 
   async function chat() {
     if (!profile || !draft.trim() || working) return;
-    const text = draft.trim(); setDraft(''); setMessages((items) => [...items, { role: 'talent', text }]); setWorking(true);
+    const text = draft.trim(); const activeLearning = await ensureLearningSession(); if (!activeLearning) return; setDraft(''); setMessages((items) => [...items, { role: 'talent', text }]); setWorking(true);
     try {
-      const reply = await askTextTutor({ firstName: profile.firstName, country: profile.country, tutorKey: tutor?.key, skill: selected?.name, skillLevel: selected?.level, evaluation: selected?.evaluation, message: text });
-      setMessages((items) => [...items, { role: 'tuteur', text: reply.text }]);
+      const reply = await askTextTutor({ firstName: profile.firstName, country: profile.country, tutorKey: tutor?.key, skill: selected?.name, skillLevel: selected?.level, learningSessionId: activeLearning.id, message: text });
+      if (reply.session) { setLearningSession(reply.session); setMessages(reply.session.messages.map((item) => ({ role: item.role, text: item.text }))); }
+      else setMessages((items) => [...items, { role: 'tuteur', text: reply.text }]);
       if (reply.evaluation && selected) {
         const next = await setEvaluationProgress(selected.id, reply.evaluation);
         setSkills(next); setSelected(next.find((item) => item.id === selected.id));
@@ -138,10 +140,19 @@ export default function HomeScreen() {
 
   async function beginAssessment() {
     if (!selected) return notify('Choisissez une compétence', 'Sélectionnez d’abord la compétence à évaluer.', 'info');
-    const next = await setEvaluationProgress(selected.id, { active: true, questionCount: 0, consecutiveSuccesses: 0, completed: false, passed: false, updatedAt: new Date().toISOString() });
+    const activeLearning = await ensureLearningSession(); if (!activeLearning) return;
+    const serverSession = await startLearningEvaluation(activeLearning.id);
+    setLearningSession(serverSession); setMessages(serverSession.messages.map((item) => ({ role: item.role, text: item.text })));
+    const next = await setEvaluationProgress(selected.id, serverSession.evaluation);
     setSkills(next); setSelected(next.find((skill) => skill.id === selected.id));
     notify('Mise à jour réussie', 'Évaluation en 5 questions démarrée.');
-    setMessages((items) => [...items, { role: 'tuteur', text: `Évaluation en 5 questions pour « ${selected.name} ». Je vérifierai une réussite à la fois et j’expliquerai chaque réponse. Question 1/5 : décris une situation réelle où tu as utilisé cette compétence, puis explique ton choix principal.` }]);
+  }
+
+  async function ensureLearningSession() {
+    if (learningSession) return learningSession;
+    if (!selected) { notify('Choisissez une compétence', 'Sélectionnez la compétence avant de démarrer le tuteur.', 'info'); return undefined; }
+    try { const created = await createLearningSession({ skill: selected.name, level: selected.level, tutor: tutor?.name || 'Koxmos' }); setLearningSession(created); setMessages(created.messages.map((item) => ({ role: item.role, text: item.text }))); return created; }
+    catch (error) { notify('Conversation indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); return undefined; }
   }
 
   async function openWallet() { try { setWallet(await loadWallet()); setPage('wallet'); } catch (error) { notify('Temps indisponible', error instanceof Error ? error.message : 'Broker non configuré', 'info'); } }
@@ -176,7 +187,7 @@ export default function HomeScreen() {
   if (page === 'search') return view(<SkillSearchScreen skills={skills} query={skillSearch} onQueryChange={setSkillSearch} select={(skill) => { setSelected(skill); setSkillSearch(''); setSkillSearchOpen(false); setPage('home'); notify(`${skill.name} sélectionnée`); }} back={() => { setSkillSearch(''); setSkillSearchOpen(false); setPage('home'); }} />);
 
   if (page === 'text') return view(<ChatScreen selected={selected} tutor={tutor} messages={messages} draft={draft} working={working} setDraft={setDraft} back={() => setPage('home')} switchToVoice={() => setPage('voice')} startAssessment={beginAssessment} chat={chat} />);
-  if (page === 'voice') return view(<Voice skill={selected} tutor={tutor || catalogTutors[0] || tutorsForCountry(profile.country)[0]} messages={messages} setMessages={setMessages} onFlame={setFlame} back={() => setPage('home')} draft={draft} setDraft={setDraft} working={working} chat={chat} notify={notify} />);
+  if (page === 'voice') return view(<Voice skill={selected} tutor={tutor || catalogTutors[0] || tutorsForCountry(profile.country)[0]} learningSession={learningSession} ensureLearningSession={ensureLearningSession} messages={messages} setMessages={setMessages} onFlame={setFlame} back={() => setPage('home')} draft={draft} setDraft={setDraft} working={working} chat={chat} notify={notify} />);
 
   const activeProfile: LocalProfile = profile;
   function renderHome() {
@@ -191,7 +202,7 @@ export default function HomeScreen() {
       flame={flame}
       wallet={wallet}
       openWallet={openWallet}
-      selectTutor={setTutor}
+      selectTutor={(nextTutor) => { if (!selected) return notify('Choisissez une compétence', 'Sélectionnez une compétence avant le tuteur.', 'info'); setTutor(nextTutor); setLearningSession(undefined); setMessages([]); setPage('voice'); }}
       openProfile={() => setPage('profile')}
       openSearch={() => setSkillSearchOpen(true)}
       addSkill={() => setPage('skill')}
@@ -255,11 +266,11 @@ function SkillSearchScreen({ skills, query, onQueryChange, select, back }: { ski
   return <SafeAreaView style={s.screen} edges={['top', 'bottom']}><Animated.View style={[s.flex, { opacity: offset.interpolate({ inputRange: [-32, 0], outputRange: [.2, 1] }), transform: [{ translateX: offset }] }]}><View style={s.bar}><IconButton label="Retour" onPress={back}><ArrowLeft size={22} color="#111827" /></IconButton><Text style={s.barTitle}>Rechercher</Text><View style={s.barSpacer} /></View><View style={s.searchPage}><View style={s.searchField}><Search size={20} color="#6B7280" /><TextInput autoFocus value={query} onChangeText={onQueryChange} placeholder="Rechercher une compétence" placeholderTextColor="#6B7280" style={s.searchInput} /></View><ScrollView contentContainerStyle={s.searchResults} keyboardShouldPersistTaps="handled">{results.length ? results.map((skill) => <Pressable key={skill.id} accessibilityRole="button" onPress={() => select(skill)} style={[s.searchResult, skill.isHidden && s.hiddenSkill]}><View><Text style={s.skillName}>{skill.name}</Text><Text style={s.skillMeta}>{skill.level} · {skill.isHidden ? 'Masquée' : 'Visible'}</Text></View><ArrowRight size={18} color="#4B5563" /></Pressable>) : <Text style={s.copy}>Aucune compétence trouvée.</Text>}</ScrollView></View></Animated.View></SafeAreaView>;
 }
 
-function Voice({ skill, tutor, messages, setMessages, onFlame, back, draft, setDraft, working, chat, notify }: { skill?: Skill; tutor: Tutor; messages: Message[]; setMessages: React.Dispatch<React.SetStateAction<Message[]>>; onFlame: (value: number) => void; back: () => void; draft: string; setDraft: (value: string) => void; working: boolean; chat: () => void; notify: (title: string, message?: string, tone?: 'success' | 'info') => void }) {
+function Voice({ skill, tutor, learningSession, ensureLearningSession, messages, setMessages, onFlame, back, draft, setDraft, working, chat, notify }: { skill?: Skill; tutor: Tutor; learningSession?: LearningSession; ensureLearningSession: () => Promise<LearningSession | undefined>; messages: Message[]; setMessages: React.Dispatch<React.SetStateAction<Message[]>>; onFlame: (value: number) => void; back: () => void; draft: string; setDraft: (value: string) => void; working: boolean; chat: () => void; notify: (title: string, message?: string, tone?: 'success' | 'info') => void }) {
   const [session, setSession] = useState<{ id: string; charged: number } | null>(null); const [call, setCall] = useState<{ close: () => Promise<void> } | null>(null); const [state, setState] = useState('Prêt'); const [levels, setLevels] = useState({ talent: 0, agent: 0 });
   const [textMode, setTextMode] = useState(false);
   useEffect(() => { const id = session?.id; if (!id) return; const timer = setInterval(() => heartbeatVoiceSession(id).then(async (result) => { setSession({ id, charged: result.chargedFcfa }); if (result.exhausted) { await call?.close(); setState('Solde épuisé'); setSession(null); setCall(null); notify('Solde épuisé', 'Rechargez votre temps pour poursuivre.', 'info'); } }).catch(() => setState('Connexion interrompue')), 5000); return () => clearInterval(timer); }, [session?.id, call, notify]);
-  async function toggle() { if (!session) { let billingId: string | undefined; try { const billing = await startVoiceSession(skill?.name || 'Compétence'); billingId = billing.id; const kora = await startKoraConversation({ billingSessionId: billing.id, tutor: tutor.key, voiceId: tutor.voiceId, level: skill?.level || 'Débutant', summary: skill?.assessment?.evidence, onRemoteStream: () => setState(`${tutor.name} parle`), onStatus: (status) => setState(`Kora : ${status}`), onAudioLevel: setLevels, onTranscript: (turn) => setMessages((previous) => [...previous, { role: turn.speaker === 'agent' ? 'tuteur' : 'talent', text: turn.text }]) }); setCall(kora); setSession({ id: billing.id, charged: 0 }); setState('Kora connecté'); } catch (error) { if (billingId) await endVoiceSession(billingId).catch(() => undefined); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); } } else { const activeSession = session; try { await call?.close().catch(() => undefined); const result = await endVoiceSession(activeSession.id); if (result.durationSeconds >= 60) { const practice = await recordPractice(result.durationSeconds); onFlame(practice.flame); if (practice.rewarded) { notify('Flamme gagnée', 'Une minute de pratique validée : +1 flamme.'); void sendLocalNotification('Flamme Koxmos gagnée', 'Votre pratique du jour est validée.'); } } setState(`Terminée : ${result.chargedFcfa.toFixed(2)} FCFA`); notify('Session terminée', `${result.chargedFcfa.toFixed(2)} FCFA débités.`); } finally { setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); } } }
+  async function toggle() { if (!session) { let billingId: string | undefined; try { const activeLearning = learningSession || await ensureLearningSession(); if (!activeLearning) return; const billing = await startVoiceSession(skill?.name || 'Compétence'); billingId = billing.id; const kora = await startKoraConversation({ billingSessionId: billing.id, learningSessionId: activeLearning.id, tutor: tutor.key, voiceId: tutor.voiceId, level: skill?.level || 'Débutant', summary: activeLearning.summary || skill?.assessment?.evidence, onRemoteStream: () => setState(`${tutor.name} parle`), onStatus: (status) => setState(`Kora : ${status}`), onAudioLevel: setLevels, onTranscript: (turn) => { const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => [...previous, { role: event.role, text: event.text }]); void recordLearningEvent(activeLearning.id, event).catch(() => undefined); } }); setCall(kora); setSession({ id: billing.id, charged: 0 }); setState('Kora connecté'); } catch (error) { if (billingId) await endVoiceSession(billingId).catch(() => undefined); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); } } else { const activeSession = session; try { await call?.close().catch(() => undefined); const result = await endVoiceSession(activeSession.id); if (result.durationSeconds >= 60) { const practice = await recordPractice(result.durationSeconds); onFlame(practice.flame); if (practice.rewarded) { notify('Flamme gagnée', 'Une minute de pratique validée : +1 flamme.'); void sendLocalNotification('Flamme Koxmos gagnée', 'Votre pratique du jour est validée.'); } } setState(`Terminée : ${result.chargedFcfa.toFixed(2)} FCFA`); notify('Session terminée', `${result.chargedFcfa.toFixed(2)} FCFA débités.`); } finally { setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); } } }
   useEffect(() => { void toggle(); }, []);
   async function leaveVoice() { if (session) await toggle(); back(); }
   async function changeAgent() { if (textMode) { setTextMode(false); await toggle(); return; } if (session) await toggle(); setTextMode(true); }
