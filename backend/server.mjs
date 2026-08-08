@@ -32,6 +32,7 @@ const rechargePlans = { 30: 3_000, 60: 6_000, 300: 30_000, 600: 60_000 };
 const maxSessionMs = Number(process.env.KOXMOS_MAX_SESSION_MINUTES || 60) * 60_000;
 const sessionRetentionMs = Number(process.env.KOXMOS_SESSION_RETENTION_DAYS || 30) * 86_400_000;
 const ledgerRetentionMs = Number(process.env.KOXMOS_LEDGER_RETENTION_DAYS || 730) * 86_400_000;
+const learningRetentionMs = Number(process.env.KOXMOS_LEARNING_SESSION_RETENTION_DAYS || 30) * 86_400_000;
 const stateFile = resolve(import.meta.dirname, process.env.KOXMOS_STATE_FILE || './data/billing-state.json');
 const requests = new Map();
 const koraSessions = new Map();
@@ -88,14 +89,16 @@ function loadState() {
 }
 let state = loadState();
 state.learningSessions ||= {};
-function publicLearningSession(session) { return { id: session.id, skill: session.skill, level: session.level, tutor: session.tutor, summary: session.summary, evaluation: session.evaluation, messages: session.messages.slice(-40), updatedAt: session.updatedAt }; }
+function publicLearningSession(session) { return { id: session.id, skill: session.skill, level: session.level, tutor: session.tutor, summary: session.summary, evaluation: session.evaluation, messages: session.messages.slice(-30), updatedAt: session.updatedAt }; }
 function learningSession(id, device) { const session = state.learningSessions[id]; return session?.device === device ? session : null; }
 function updateLearningSummary(session) { session.summary = session.messages.slice(-12).map((item) => `${item.role === 'talent' ? 'Talent' : 'Tuteur'}: ${item.text}`).join('\n').slice(-4000); session.updatedAt = now(); persist(); }
-function addLearningMessage(session, role, text, mode = 'text') { const value = String(text || '').trim().slice(0, 4000); if (!value) return; const previous = session.messages.at(-1); if (previous?.role === role && previous.text === value) return; session.messages.push({ id: crypto.randomUUID(), role, text: value, mode, createdAt: now() }); session.messages = session.messages.slice(-120); updateLearningSummary(session); }
+function addLearningMessage(session, role, text, mode = 'text') { const value = String(text || '').trim().slice(0, 4000); if (!value) return; const previous = session.messages.at(-1); if (previous?.role === role && previous.text === value) return; session.messages.push({ id: crypto.randomUUID(), role, text: value, mode, createdAt: now() }); session.messages = session.messages.slice(-40); updateLearningSummary(session); }
 function purgeExpiredState() {
   const cutoffSessions = Date.now() - sessionRetentionMs;
   const cutoffLedger = Date.now() - ledgerRetentionMs;
+  const cutoffLearning = Date.now() - learningRetentionMs;
   for (const [id, session] of Object.entries(state.sessions)) if (session.status !== 'active' && new Date(session.endedAt || session.updatedAt).getTime() < cutoffSessions) delete state.sessions[id];
+  for (const [id, session] of Object.entries(state.learningSessions)) if (new Date(session.updatedAt || session.createdAt).getTime() < cutoffLearning) delete state.learningSessions[id];
   state.ledger = state.ledger.filter((entry) => new Date(entry.createdAt).getTime() >= cutoffLedger).slice(-10_000);
 }
 function persist() {
@@ -127,7 +130,7 @@ function wallet(id) {
   }
   return state.wallets[id];
 }
-function publicWallet(id) { if (!billingEnabled) return { balanceFcfa: 0, balanceMilliXof: 0, creditSeconds: 0, pricePerMinuteFcfa: 0, updatedAt: now() }; const item = wallet(id); return { balanceFcfa: Math.floor(item.balanceMilliXof / 1000), balanceMilliXof: item.balanceMilliXof, creditSeconds: Math.floor(item.balanceMilliXof * 60 / pricePerMinuteMilliXof), pricePerMinuteFcfa: 100, updatedAt: item.updatedAt }; }
+function publicWallet(id) { if (!billingEnabled) return { balanceFcfa: 0, balanceMilliXof: 0, balanceCredits: 0, creditSeconds: 0, pricePerMinuteFcfa: 0, textRequestCreditCost: .25, updatedAt: now() }; const item = wallet(id); return { balanceFcfa: Math.floor(item.balanceMilliXof / 1000), balanceMilliXof: item.balanceMilliXof, balanceCredits: item.balanceMilliXof / pricePerMinuteMilliXof, creditSeconds: Math.floor(item.balanceMilliXof * 60 / pricePerMinuteMilliXof), pricePerMinuteFcfa: 100, textRequestCreditCost: .25, updatedAt: item.updatedAt }; }
 function addLedger(device, direction, milliXof, type, metadata = {}) {
   state.ledger.push({ id: crypto.randomUUID(), device, direction, milliXof, type, metadata, createdAt: now() });
   state.ledger = state.ledger.slice(-10_000);
@@ -168,6 +171,15 @@ app.use(express.json({ limit: '16kb' }));
 app.use((_request, response, next) => { response.setHeader('Cache-Control', 'no-store'); response.setHeader('Referrer-Policy', 'no-referrer'); response.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
 app.use(rateLimit);
 app.get('/health', (_request, response) => response.json({ ok: true, storage: 'development-file', billingEnabled, voiceProviderConfigured: Boolean(aethex && process.env.AETHEX_DEFAULT_AGENT_ID), paymentProviderConfigured: billingEnabled && Boolean(process.env.JEKO_STORE_ID && process.env.JEKO_API_KEY && process.env.JEKO_API_KEY_ID) }));
+app.delete('/v1/account', requireDevice, (request, response) => {
+  const device = request.deviceId;
+  delete state.wallets[device]; delete state.flames?.[device];
+  for (const [id, session] of Object.entries(state.sessions)) if (session.device === device) delete state.sessions[id];
+  for (const [id, session] of Object.entries(state.learningSessions)) if (session.device === device) delete state.learningSessions[id];
+  state.ledger = state.ledger.filter((entry) => entry.device !== device);
+  if (state.rechargeOrders) for (const [id, order] of Object.entries(state.rechargeOrders)) if (order.device === device) delete state.rechargeOrders[id];
+  persist(); return response.status(204).end();
+});
 
 app.post('/v1/learning/sessions', requireDevice, (request, response) => {
   const { skill, level, tutor } = request.body ?? {};

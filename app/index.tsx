@@ -7,7 +7,7 @@ import { addTestCredit, askTextTutor, createLearningSession, deleteRemoteAccount
 import { startKoraConversation } from '../core/kora';
 import { sendLocalNotification } from '../core/notifications';
 import { addSkill, applyAssessment, createTransferCode, importTransferCode, loadSkills, removeSkill, searchSkills, setEvaluationProgress, setSkillHidden, type Skill } from '../core/passport';
-import { FIRST_NAME_MAX_LENGTH, deleteLocalPassport, type LocalProfile, loadProfile, saveAgentMode, saveProfile } from '../core/profile';
+import { FIRST_NAME_MAX_LENGTH, deleteLocalPassport, type LocalProfile, loadProfile, saveProfile } from '../core/profile';
 import { MARKETS, marketCodes } from '../core/markets';
 import { tutorsForCountry, tutorsFromAethexVoices, type Tutor } from '../core/tutors';
 

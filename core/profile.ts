@@ -9,7 +9,6 @@ export const COUNTRY_MAX_LENGTH = 8;
 export type LocalProfile = {
   firstName: string;
   country: string;
-  agentMode: 'text' | 'voice';
   createdAt: string;
 };
 
@@ -27,7 +26,6 @@ export async function loadProfile(): Promise<LocalProfile | null> {
   return {
     firstName: profile.firstName ?? '',
     country: profile.country ?? 'CI',
-    agentMode: profile.agentMode ?? 'text',
     createdAt: profile.createdAt ?? new Date().toISOString(),
   };
 }
@@ -38,18 +36,12 @@ export async function saveProfile(firstName: string, country: string): Promise<L
   if (!normalizedFirstName) throw new Error('Le prénom est requis.');
   if (!/^[A-Z]{2,8}$/.test(normalizedCountry)) throw new Error('Le pays doit être un code de 2 à 8 lettres.');
   if (!marketForCountry(normalizedCountry)) throw new Error('Pays non pris en charge.');
-  const profile: LocalProfile = { firstName: normalizedFirstName, country: normalizedCountry, agentMode: 'text', createdAt: new Date().toISOString() };
+  const profile: LocalProfile = { firstName: normalizedFirstName, country: normalizedCountry, createdAt: new Date().toISOString() };
   if (!(await readLocal(DEVICE_ID_KEY))) {
     await writeLocal(DEVICE_ID_KEY, makeDeviceId());
   }
   await writeLocal(PROFILE_KEY, JSON.stringify(profile));
   return profile;
-}
-
-export async function saveAgentMode(profile: LocalProfile, agentMode: LocalProfile['agentMode']): Promise<LocalProfile> {
-  const updated = { ...profile, agentMode };
-  await writeLocal(PROFILE_KEY, JSON.stringify(updated));
-  return updated;
 }
 
 export async function getDeviceId(): Promise<string> {
@@ -66,6 +58,5 @@ export async function deleteLocalPassport(): Promise<void> {
     writeLocal(DEVICE_ID_KEY, ''),
     writeLocal('koxmos.passport.skills.v2', ''),
     writeLocal('koxmos.passport.skills.v1', ''),
-    writeLocal('koxmos.wallet.v1', ''),
   ]);
 }

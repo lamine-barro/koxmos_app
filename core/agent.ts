@@ -1,7 +1,6 @@
 import { getDeviceId } from './profile';
 import type { EvaluationProgress, SkillAssessment, SkillLevel } from './passport';
 import type { TutorKey } from './tutors';
-import { readLocal, writeLocal } from './storage';
 
 export type AgentReply = { text: string; source: 'local-demo' | 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number };
 export type LearningMessage = { id: string; role: 'talent' | 'tuteur'; text: string; mode: 'text' | 'voice'; createdAt: string };
@@ -10,14 +9,6 @@ export type Wallet = { balanceFcfa: number; balanceMilliXof: number; balanceCred
 export type VoiceSession = { id: string; startedAt: string; pricePerMinuteFcfa: number; voiceConfigured: boolean };
 export type AethexVoice = { id: string; name: string; language: string; gender?: string; country?: string; supportsDialectStyle?: boolean };
 const endpoint = process.env.EXPO_PUBLIC_KOXMOS_AGENT_URL;
-const LOCAL_WALLET_KEY = 'koxmos.wallet.v1';
-const DEFAULT_WALLET: Wallet = { balanceFcfa: 1000, balanceMilliXof: 1_000_000, balanceCredits: 10, creditSeconds: 600, pricePerMinuteFcfa: 100, textRequestCreditCost: .25, updatedAt: new Date().toISOString() };
-
-async function localWallet(): Promise<Wallet> {
-  const raw = await readLocal(LOCAL_WALLET_KEY);
-  if (!raw) { await writeLocal(LOCAL_WALLET_KEY, JSON.stringify(DEFAULT_WALLET)); return DEFAULT_WALLET; }
-  try { return { ...DEFAULT_WALLET, ...(JSON.parse(raw) as Partial<Wallet>) }; } catch { return DEFAULT_WALLET; }
-}
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!endpoint) throw new Error('Configurez EXPO_PUBLIC_KOXMOS_AGENT_URL pour utiliser ce service.');
@@ -40,14 +31,7 @@ export async function assessSkill(skill: string, transcript: string): Promise<Sk
   const data = await request<{ level: SkillLevel; confidence: number; evidence: string; tutor: string }>('/v1/assessments', { method: 'POST', body: JSON.stringify({ skill, transcript }) });
   return { ...data, assessedAt: new Date().toISOString() };
 }
-export async function loadWallet(): Promise<Wallet> {
-  try {
-    if (endpoint) return await request<Wallet>('/v1/wallet');
-  } catch {
-    // The phone keeps a usable session while the broker is unavailable.
-  }
-  return localWallet();
-}
+export async function loadWallet(): Promise<Wallet> { return request<Wallet>('/v1/wallet'); }
 export async function loadFlame(): Promise<number> { return (await request<{ flame: number }>('/v1/flame')).flame; }
 export async function recordPractice(seconds: number): Promise<{ flame: number; rewarded: boolean }> { return request('/v1/practice', { method: 'POST', body: JSON.stringify({ seconds }) }); }
 export async function requestRecharge(minutes: number): Promise<void> { await request('/v1/wallet/recharge', { method: 'POST', body: JSON.stringify({ minutes }) }); }
