@@ -42,9 +42,23 @@ function validProposal(proposal, currentLevel) {
   return !currentLevel || Math.abs(skillLevels.indexOf(proposal.level) - skillLevels.indexOf(currentLevel)) <= 1;
 }
 
+const koraToolDefinitions = [
+  { name: 'get_talent_skill_context', description: 'Obtient le contexte minimal de compétence du talent pour cette conversation.', parameters_schema: { type: 'object', properties: {} } },
+  { name: 'propose_passport_update', description: 'Propose, sans appliquer, une mise à jour du niveau après des preuves observées.', parameters_schema: { type: 'object', properties: { level: { type: 'string', enum: ['Débutant', 'Intermédiaire', 'Avancé', 'Expert'] }, confidence: { type: 'number', minimum: 0, maximum: 1 }, evidence: { type: 'string', minLength: 20, maxLength: 800 }, next_exercise: { type: 'string', minLength: 10, maxLength: 400 } }, required: ['level', 'confidence', 'evidence', 'next_exercise'] } },
+];
+
+async function ensureKoraTools(agentId) {
+  if (!process.env.KOXMOS_KORA_TOOL_URL || !process.env.KOXMOS_KORA_TOOL_SECRET) throw new Error('Les paramètres du webhook Kora sont requis.');
+  const existing = Array.from(await aethex.listAgentTools(agentId));
+  for (const definition of koraToolDefinitions) {
+    if (existing.some((item) => item.name === definition.name)) continue;
+    await aethex.addAgentTool(agentId, { ...definition, endpoint_url: process.env.KOXMOS_KORA_TOOL_URL, headers: { 'X-Koxmos-Kora-Secret': process.env.KOXMOS_KORA_TOOL_SECRET } });
+  }
+}
+
 async function agentForIvorianVoice(voice) {
   const cached = aethexVoiceAgents.get(voice.id);
-  if (cached) return cached;
+  if (cached) { await ensureKoraTools(cached); return cached; }
   const name = `Koxmos — CI — ${String(voice.name).slice(0, 60)}`;
   const agents = Array.from(await aethex.listAgents({ limit: 100 }));
   const existing = agents.find((agent) => agent.name === name);
@@ -60,6 +74,7 @@ async function agentForIvorianVoice(voice) {
     system_prompt: 'Tu es un tuteur vocal Koxmos. Parle uniquement en français. Aide la personne à progresser sur une situation réelle avec des réponses courtes, concrètes et encourageantes. N’invente jamais une modification de son passeport et ne demande jamais d’envoyer un audio ou une pièce jointe.',
   };
   const agent = existing ? await aethex.updateAgent(existing.id, config) : await aethex.createAgent(config);
+  await ensureKoraTools(agent.id);
   aethexVoiceAgents.set(voice.id, agent.id);
   return agent.id;
 }
