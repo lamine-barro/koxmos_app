@@ -6,12 +6,11 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Circle, Eye, EyeOff, Flame, 
 import { addTestCredit, askTextTutor, assessSkill, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadAethexVoices, loadFlame, loadWallet, recordPractice, requestRecharge, startVoiceSession, type Wallet as WalletData } from '../core/agent';
 import { startKoraConversation } from '../core/kora';
 import { sendLocalNotification } from '../core/notifications';
-import { addSkill, applyAssessment, createTransferCode, importTransferCode, loadSkills, removeSkill, searchSkills, setSkillHidden, type Skill, type SkillLevel } from '../core/passport';
+import { addSkill, applyAssessment, createTransferCode, importTransferCode, loadSkills, removeSkill, searchSkills, setSkillHidden, type Skill } from '../core/passport';
 import { FIRST_NAME_MAX_LENGTH, deleteLocalPassport, type LocalProfile, loadProfile, saveAgentMode, saveProfile } from '../core/profile';
 import { MARKETS, marketCodes } from '../core/markets';
 import { tutorsForCountry, tutorsFromAethexVoices, type Tutor } from '../core/tutors';
 
-const LEVELS: SkillLevel[] = ['Débutant', 'Intermédiaire', 'Avancé', 'Expert'];
 const MARKET_FLAGS: Record<keyof typeof MARKETS, string> = { CI: '🇨🇮', CM: '🇨🇲', CG: '🇨🇬', FR: '🇫🇷', MA: '🇲🇦', SN: '🇸🇳', TN: '🇹🇳', AE: '🇦🇪', EG: '🇪🇬', GH: '🇬🇭', KE: '🇰🇪', NG: '🇳🇬', US: '🇺🇸' };
 type Page = 'home' | 'skill' | 'text' | 'voice' | 'wallet' | 'transfer' | 'search' | 'profile';
 type Message = { role: 'talent' | 'tuteur'; text: string };
@@ -40,7 +39,6 @@ export default function HomeScreen() {
   const [skillName, setSkillName] = useState('');
   const [skillSearch, setSkillSearch] = useState('');
   const [skillSearchOpen, setSkillSearchOpen] = useState(false);
-  const [level, setLevel] = useState<SkillLevel>('Débutant');
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState(false);
@@ -109,7 +107,7 @@ export default function HomeScreen() {
 
   async function saveSkill() {
     try {
-      const next = await addSkill(skillName, level);
+      const next = await addSkill(skillName);
       setSkills(next); setSelected(next[0]); setSkillName(''); setPage('home');
       notify('Compétence ajoutée', 'Elle apparaît maintenant dans votre passeport.');
     } catch (error) { notify('Compétence', error instanceof Error ? error.message : 'Impossible à ajouter', 'info'); }
@@ -164,7 +162,7 @@ export default function HomeScreen() {
   if (locked) return view(<Center><Text style={s.kicker}>PASSEPORT PROTÉGÉ</Text><Text style={s.title}>Passeport verrouillé.</Text><Text style={s.copy}>Votre identité et vos compétences restent protégées sur cet appareil.</Text><Button title="Déverrouiller" onPress={async () => { if (await unlock(profile)) { setLocked(false); setSkills(await loadSkills()); } }} /></Center>);
   if (!profile) return view(<Center><Text style={s.kicker}>VOTRE PASSEPORT DE COMPÉTENCES</Text><Text style={s.title}>Bienvenue.</Text><Text style={s.copy}>Créez un passeport local, privé et prêt à évoluer avec vous.</Text><TextInput value={firstName} maxLength={FIRST_NAME_MAX_LENGTH} onChangeText={setFirstName} placeholder="Votre prénom" placeholderTextColor="#6B7280" autoCapitalize="words" returnKeyType="next" style={s.input} /><CountrySelect value={country} open={countryPickerOpen} onOpen={() => setCountryPickerOpen(true)} onClose={() => setCountryPickerOpen(false)} onChange={setCountry} /><Button title={working ? 'Création…' : 'Continuer'} disabled={working} onPress={createProfile} /></Center>);
 
-  if (page === 'skill') return view(<Screen title="Nouvelle compétence" back={() => setPage('home')}><Text style={s.copy}>Ajoutez une compétence et son niveau actuel. Vous pourrez l’affiner avec Kora.</Text><TextInput value={skillName} onChangeText={setSkillName} placeholder="Ex. Prise de parole" placeholderTextColor="#6B7280" style={s.input} /><View style={s.chips}>{LEVELS.map((item) => <Pressable key={item} accessibilityRole="radio" accessibilityState={{ selected: level === item }} onPress={() => setLevel(item)} style={[s.chip, level === item && s.chipOn]}><Text style={[s.chipText, level === item && s.on]}>{item}</Text></Pressable>)}</View><Button title="Ajouter au passeport" onPress={saveSkill} /></Screen>);
+  if (page === 'skill') return view(<Screen title="Nouvelle compétence" back={() => setPage('home')}><Text style={s.copy}>Ajoutez une compétence. Elle sera déclarée au niveau débutant et pourra évoluer avec Kora.</Text><TextInput value={skillName} onChangeText={setSkillName} placeholder="Ex. Prise de parole" placeholderTextColor="#6B7280" autoFocus returnKeyType="done" onSubmitEditing={saveSkill} style={s.input} /><Button title="Ajouter au passeport" onPress={saveSkill} /></Screen>);
 
   if (page === 'wallet') {
     return view(<Screen title="Crédits restants" back={() => setPage('home')}><Text style={s.title}>{formatCredits(wallet?.balanceCredits || 0)}</Text><Text style={s.copy}>10 crédits sont offerts à la création. 1 crédit = 100 FCFA = 60 secondes de tuteur vocal. Une réponse texte coûte 0,25 crédit.</Text><Text style={s.sectionTitle}>Recharger des crédits</Text><View style={s.rechargeList}>{[30, 60, 300, 600].map((item) => <Pressable key={item} accessibilityRole="button" style={s.rechargePlan} onPress={() => requestRecharge(item).then(() => notify('Paiement en préparation', 'Vous recevrez une confirmation après validation du paiement.', 'info')).catch((error) => notify('Recharge indisponible', error instanceof Error ? error.message : 'Réessayez plus tard.', 'info'))}><Text style={s.skillName}>{formatCredits(item)}</Text><Text style={s.price}>{item * 100} FCFA</Text><ArrowRight size={18} color="#374151" /></Pressable>)}</View><Text style={s.notice}>Les crédits sont ajoutés après confirmation signée du paiement. Le checkout Jèko nécessite les identifiants marchands et la validation sandbox.</Text><Button title="Ajouter 500 FCFA de test" onPress={async () => { setWallet(await addTestCredit(500)); notify('Crédit de test ajouté', '5 crédits de test ont été ajoutés.'); }} /></Screen>);

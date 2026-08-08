@@ -52,12 +52,12 @@ export async function loadSkills(): Promise<Skill[]> {
 
 async function save(skills: Skill[]) { await writeLocal(SKILLS_KEY, JSON.stringify(skills)); }
 
-export async function addSkill(name: string, level: SkillLevel): Promise<Skill[]> {
+export async function addSkill(name: string): Promise<Skill[]> {
   const normalized = name.trim().replace(/\s+/g, ' ').slice(0, 80);
   if (!normalized) throw new Error('Saisissez une compétence valide.');
   const skills = await loadSkills();
   if (skills.some((skill) => skill.name.localeCompare(normalized, undefined, { sensitivity: 'accent' }) === 0)) throw new Error('Cette compétence est déjà dans votre passeport.');
-  const skill: Skill = { id: randomHex(16), name: normalized, level, source: 'declared', isHidden: false, updatedAt: new Date().toISOString() };
+  const skill: Skill = { id: randomHex(16), name: normalized, level: 'Débutant', source: 'declared', isHidden: false, updatedAt: new Date().toISOString() };
   const next = [skill, ...skills]; await save(next); return next;
 }
 
