@@ -21,9 +21,10 @@ function readTranscript(raw: string): LiveTranscript | null {
   try {
     const event = JSON.parse(raw) as Record<string, unknown>;
     const type = asText(event.type).toLowerCase();
-    const text = asText(event.text) || asText(event.transcript) || asText(event.delta) || asText((event.item as Record<string, unknown> | undefined)?.transcript);
+    const data = event.data as Record<string, unknown> | undefined;
+    const text = asText(event.text) || asText(event.transcript) || asText(event.delta) || asText(data?.text) || asText(data?.transcript) || asText((event.item as Record<string, unknown> | undefined)?.transcript);
     if (!text) return null;
-    const speaker = /user|input|talent|caller/.test(type) ? 'talent' : /agent|assistant|output|response/.test(type) ? 'agent' : null;
+    const speaker = /user|input|talent|caller/.test(type) ? 'talent' : /bot|agent|assistant|output|response/.test(type) ? 'agent' : null;
     return speaker ? { speaker, text, isFinal: /final|completed|done/.test(type) } : null;
   } catch { return null; }
 }
@@ -47,12 +48,15 @@ export async function startKoraConversation(input: { billingSessionId: string; l
   const scheduleIceFlush = () => { if (!peerConnectionId) return; if (iceTimer) clearTimeout(iceTimer); iceTimer = setTimeout(() => { iceTimer = undefined; void flushCandidates(); }, 200); };
   stream.getTracks().forEach((track) => peer.addTrack(track, stream));
   peer.ontrack = (event: any) => { if (event.streams[0]) input.onRemoteStream(event.streams[0]); };
-  peer.ondatachannel = (event: any) => {
-    event.channel.onmessage = (message: any) => {
+  const listenForTranscripts = (channel: any) => {
+    channel.onmessage = (message: any) => {
       const turn = readTranscript(String(message.data || ''));
       if (turn) input.onTranscript?.(turn);
     };
   };
+  // Aethex sends live user and tutor transcription through this negotiated channel.
+  listenForTranscripts(peer.createDataChannel('chat', { ordered: true }));
+  peer.ondatachannel = (event: any) => listenForTranscripts(event.channel);
   peer.onconnectionstatechange = () => input.onStatus(peer.connectionState);
   peer.onicecandidate = (event: any) => {
     const candidate = event.candidate;
