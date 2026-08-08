@@ -9,7 +9,8 @@ const EXPORT_ITERATIONS = 600_000;
 export type SkillLevel = 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert';
 export type SkillSource = 'declared' | 'inferred';
 export type SkillAssessment = { level: SkillLevel; previousLevel?: SkillLevel; evidence: string; confidence: number; assessedAt: string; tutor: string; nextExercise?: string };
-export type Skill = { id: string; name: string; level: SkillLevel; source: SkillSource; isHidden: boolean; updatedAt: string; assessment?: SkillAssessment; assessmentHistory?: SkillAssessment[] };
+export type EvaluationProgress = { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean; feedback?: string; updatedAt: string };
+export type Skill = { id: string; name: string; level: SkillLevel; source: SkillSource; isHidden: boolean; updatedAt: string; assessment?: SkillAssessment; assessmentHistory?: SkillAssessment[]; evaluation?: EvaluationProgress };
 
 const LEVELS: SkillLevel[] = ['Débutant', 'Intermédiaire', 'Avancé', 'Expert'];
 
@@ -32,7 +33,10 @@ function cleanSkill(value: unknown): Skill | null {
   const legacySource = (item as { source?: unknown }).source;
   const source: SkillSource = legacySource === 'inferred' || legacySource === 'Évaluée' ? 'inferred' : 'declared';
   const assessmentHistory = Array.isArray(item.assessmentHistory) ? item.assessmentHistory.filter((value): value is SkillAssessment => Boolean(value && typeof value === 'object')).slice(-12) : undefined;
-  return { id: item.id, name, level: item.level as SkillLevel, source, isHidden: Boolean((item as { isHidden?: unknown; is_hidden?: unknown }).isHidden ?? (item as { is_hidden?: unknown }).is_hidden), updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(), assessment, assessmentHistory };
+  const rawEvaluation = item.evaluation as Partial<EvaluationProgress> | undefined;
+  const evaluation = rawEvaluation && typeof rawEvaluation === 'object' ? { active: Boolean(rawEvaluation.active), questionCount: Math.max(0, Math.min(5, Number(rawEvaluation.questionCount) || 0)), consecutiveSuccesses: Math.max(0, Math.min(5, Number(rawEvaluation.consecutiveSuccesses) || 0)), completed: Boolean(rawEvaluation.completed), passed: Boolean(rawEvaluation.passed), feedback: typeof rawEvaluation.feedback === 'string' ? rawEvaluation.feedback.slice(0, 600) : undefined, updatedAt: typeof rawEvaluation.updatedAt === 'string' ? rawEvaluation.updatedAt : new Date().toISOString() } : undefined;
+  const visibility = item as { isHidden?: unknown; is_hidden?: unknown };
+  return { id: item.id, name, level: item.level as SkillLevel, source, isHidden: Boolean(visibility.isHidden ?? visibility.is_hidden), updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(), assessment, assessmentHistory, evaluation };
 }
 
 function parseSkills(raw: string | null): Skill[] {
@@ -77,10 +81,19 @@ export async function applyAssessment(id: string, assessment: SkillAssessment): 
   const skills = await loadSkills();
   const next = skills.map((skill) => {
     if (skill.id !== id) return skill;
+    if (!skill.evaluation?.passed || skill.evaluation.questionCount !== 5 || skill.evaluation.consecutiveSuccesses !== 5) throw new Error('Cinq réussites consécutives sont requises avant toute progression de niveau.');
     if (Math.abs(LEVELS.indexOf(assessment.level) - LEVELS.indexOf(skill.level)) > 1) throw new Error('Une évaluation ne peut faire évoluer qu’un niveau à la fois.');
     const reviewed = { ...assessment, previousLevel: skill.level, evidence: assessment.evidence.trim().slice(0, 800), nextExercise: assessment.nextExercise?.trim().slice(0, 400) };
-    return { ...skill, level: assessment.level, source: 'inferred' as const, assessment: reviewed, assessmentHistory: [...(skill.assessmentHistory || []), reviewed].slice(-12), updatedAt: new Date().toISOString() };
+    return { ...skill, level: assessment.level, source: 'inferred' as const, assessment: reviewed, assessmentHistory: [...(skill.assessmentHistory || []), reviewed].slice(-12), evaluation: { ...skill.evaluation, active: false, updatedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
   });
+  if (next.every((skill) => skill.id !== id)) throw new Error('Compétence introuvable.');
+  await save(next); return next;
+}
+
+export async function setEvaluationProgress(id: string, progress: EvaluationProgress): Promise<Skill[]> {
+  const skills = await loadSkills();
+  const normalized: EvaluationProgress = { ...progress, questionCount: Math.max(0, Math.min(5, Math.floor(progress.questionCount))), consecutiveSuccesses: Math.max(0, Math.min(5, Math.floor(progress.consecutiveSuccesses))), updatedAt: new Date().toISOString() };
+  const next = skills.map((skill) => skill.id === id ? { ...skill, evaluation: normalized, updatedAt: new Date().toISOString() } : skill);
   if (next.every((skill) => skill.id !== id)) throw new Error('Compétence introuvable.');
   await save(next); return next;
 }

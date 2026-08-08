@@ -1,9 +1,9 @@
 import { getDeviceId } from './profile';
-import type { SkillAssessment, SkillLevel } from './passport';
+import type { EvaluationProgress, SkillAssessment, SkillLevel } from './passport';
 import type { TutorKey } from './tutors';
 import { readLocal, writeLocal } from './storage';
 
-export type AgentReply = { text: string; source: 'local-demo' | 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; wallet?: Wallet; chargedCredits?: number };
+export type AgentReply = { text: string; source: 'local-demo' | 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number };
 export type Wallet = { balanceFcfa: number; balanceMilliXof: number; balanceCredits: number; creditSeconds: number; pricePerMinuteFcfa: number; textRequestCreditCost: number; updatedAt: string };
 export type VoiceSession = { id: string; startedAt: string; pricePerMinuteFcfa: number; voiceConfigured: boolean };
 export type AethexVoice = { id: string; name: string; language: string; gender?: string; country?: string; supportsDialectStyle?: boolean };
@@ -25,8 +25,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-export async function askTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; message: string }): Promise<AgentReply> {
-  if (endpoint) { const data = await request<{ text: string; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; wallet?: Wallet; chargedCredits?: number }>('/v1/text', { method: 'POST', body: JSON.stringify(input) }); return { text: data.text, source: 'server', proposal: data.proposal, wallet: data.wallet, chargedCredits: data.chargedCredits }; }
+export async function askTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; evaluation?: EvaluationProgress; message: string }): Promise<AgentReply> {
+  if (endpoint) { const data = await request<{ text: string; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number }>('/v1/text', { method: 'POST', body: JSON.stringify(input) }); return { text: data.text, source: 'server', proposal: data.proposal, evaluation: data.evaluation, wallet: data.wallet, chargedCredits: data.chargedCredits }; }
   const focus = input.skill ? ` sur « ${input.skill} »` : '';
   return { source: 'local-demo', text: `Très bien, ${input.firstName}. Donne-moi un exemple réel${focus} : quel était le contexte, quelle décision as-tu prise et quel résultat as-tu obtenu ?` };
 }
