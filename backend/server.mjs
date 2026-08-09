@@ -178,19 +178,20 @@ function settle(session) {
   if (Date.now() >= expiryAt && session.status === 'active') { session.status = 'ended_timeout'; session.endedAt = new Date(expiryAt).toISOString(); }
   session.updatedAt = now(); persist(); return { chargedMilliXof, exhausted: session.status === 'ended_credit' };
 }
-function closeRealtimeSession(sessionId, status = 'ended') {
+function closeRealtimeSession(sessionId, status = 'ended', expectedDevice) {
   const link = realtimeSessions.get(sessionId);
   const timer = realtimeTimers.get(sessionId); if (timer) clearTimeout(timer);
   realtimeTimers.delete(sessionId); realtimeSessions.delete(sessionId);
   if (link?.sideband?.readyState === WebSocket.OPEN || link?.sideband?.readyState === WebSocket.CONNECTING) link.sideband.close();
   const billing = state.sessions[sessionId];
-  if (billing?.device === link?.device && billing.status === 'active') {
+  const owner = link?.device || expectedDevice;
+  if (billing?.device === owner && billing.status === 'active') {
     settle(billing);
     if (billing.status === 'active') billing.status = status;
     billing.endedAt = now(); billing.providerSessionId = undefined; billing.updatedAt = now(); persist();
   }
   const result = { proposal: link?.proposal, evaluation: link?.learningSessionId ? learningSession(link.learningSessionId, link.device)?.evaluation : undefined };
-  audit('realtime.closed', { billingSessionId: sessionId, status, device: deviceFingerprint(link?.device), learningSessionId: link?.learningSessionId, proposal: result.proposal?.level, evaluation: result.evaluation });
+  audit('realtime.closed', { billingSessionId: sessionId, status, device: deviceFingerprint(owner), learningSessionId: link?.learningSessionId, proposal: result.proposal?.level, evaluation: result.evaluation });
   return result;
 }
 
@@ -317,6 +318,7 @@ const realtimeTools = [
   { type: 'function', name: 'propose_passport_update', description: 'Propose un niveau uniquement après cinq réussites consécutives.', parameters: { type: 'object', properties: { level: { type: 'string', enum: skillLevels }, confidence: { type: 'number', minimum: 0.7, maximum: 1 }, evidence: { type: 'string', minLength: 80, maxLength: 800 }, next_exercise: { type: 'string', minLength: 10, maxLength: 400 } }, required: ['level', 'confidence', 'evidence', 'next_exercise'], additionalProperties: false } },
 ];
 function realtimeVoice(tutorKey) { return ({ AWA: 'marin', LYNA: 'verse', MALIK: 'cedar' })[tutorKey] || 'marin'; }
+function realtimeTutorName(tutorKey) { return ({ AWA: 'Awa', LYNA: 'Lyna', MALIK: 'Malik' })[tutorKey] || 'votre tuteur Koxmos'; }
 function realtimeInstructions({ country, tutor, learning, level, summary }) {
   const startsInEnglish = ['AE', 'EG', 'GH', 'KE', 'NG', 'US'].includes(country);
   return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response short, concrete, kind, and focused on one next action.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nWhen the call opens, immediately greet the learner, name the skill, and ask exactly this choice in the learner’s language: whether they want to work on a specific objective or start the five-question evaluation. Then wait for their answer. At the beginning, call get_talent_skill_context. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per answer and call propose_passport_update only after exactly five consecutive successes.`;
@@ -400,7 +402,7 @@ app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   const locale = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : 'CI';
   const tutorKey = typeof tutor === 'string' ? tutor.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : '';
   const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), sideband: null };
-  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 420, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor, learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
+  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 420, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
   audit('realtime.connect_requested', { traceId: request.traceId, billingSessionId, learningSessionId: learning?.id, device: deviceFingerprint(request.deviceId), tutor: tutorKey, locale, resume: Boolean(resume), skill: link.skill, level: link.level, summaryChars: link.summary.length });
   try {
     const form = new FormData(); form.set('sdp', sdp); form.set('session', JSON.stringify(session));
@@ -415,7 +417,7 @@ app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   } catch (error) { auditError('realtime.connect_failed', error, { traceId: request.traceId, billingSessionId, learningSessionId: learning?.id }); return response.status(502).json({ error: 'Connexion OpenAI Realtime impossible.' }); }
 });
 
-app.post('/v1/realtime/:sessionId/end', requireDevice, (request, response) => { const link = realtimeSessions.get(request.params.sessionId); if (!link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' }); audit('realtime.end_requested', { traceId: request.traceId, billingSessionId: request.params.sessionId }); return response.json(closeRealtimeSession(request.params.sessionId)); });
+app.post('/v1/realtime/:sessionId/end', requireDevice, (request, response) => { const billing = state.sessions[request.params.sessionId]; if (!billing || billing.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' }); const link = realtimeSessions.get(request.params.sessionId); if (link && link.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' }); audit('realtime.end_requested', { traceId: request.traceId, billingSessionId: request.params.sessionId, hadRealtimeLink: Boolean(link) }); return response.json(closeRealtimeSession(request.params.sessionId, 'ended', request.deviceId)); });
 
 app.get('/v1/wallet', requireDevice, (request, response) => response.json(publicWallet(request.deviceId)));
 app.get('/v1/wallet/ledger', requireDevice, (request, response) => response.json({ entries: state.ledger.filter((entry) => entry.device === request.deviceId).slice(-50).reverse() }));

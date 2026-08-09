@@ -386,7 +386,7 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
       if (!silent) { const consumedCredits = result.chargedFcfa / 100; setState(`Terminée : ${consumedCredits.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} crédits`); notify('Conversation terminée', `${consumedCredits.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} crédit${consumedCredits === 1 ? '' : 's'} consommé${consumedCredits === 1 ? '' : 's'}.`); }
     } finally { debugLog('conversation.voice.stopped', { billingSessionId: activeSession.id }); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); }
   }
-  async function leaveVoice() { if (session) await toggle(); back(); }
+  async function leaveVoice() { try { if (session) await toggle(); } finally { back(); } }
   async function changeAgent() { if (textMode) { setTextMode(false); await toggle(true); return; } if (session) await toggle(true); setState('Mode texte'); setTextMode(true); }
   useEffect(() => { if (!autoStart) return; onAutoStartConsumed(); void toggle(); }, []);
   return <VoiceLayout skill={skill} tutor={tutor} messages={messages} agentAudioLevel={levels.agent} textMode={textMode} draft={draft} setDraft={setDraft} working={working} chat={chat} leave={() => { void leaveVoice(); }} switchAgent={() => { void changeAgent(); }} />;

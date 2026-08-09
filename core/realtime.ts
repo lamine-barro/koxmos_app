@@ -35,10 +35,12 @@ export async function startRealtimeConversation(input: { billingSessionId: strin
   peer.onconnectionstatechange = () => { debugLog('realtime.connection_state', { billingSessionId: input.billingSessionId, state: peer.connectionState }); input.onStatus(peer.connectionState); };
   const channel = peer.createDataChannel('oai-events', { ordered: true });
   let closing = false;
+  let lastAgentAudioEventAt = 0;
   channel.onmessage = (message: any) => {
     try {
       const event = JSON.parse(String(message.data || '')) as Record<string, any>;
       const type = asText(event.type);
+      if (type === 'response.output_audio.delta' || type === 'response.audio.delta' || type === 'response.output_audio.started') lastAgentAudioEventAt = Date.now();
       if (type === 'conversation.item.input_audio_transcription.delta' || type === 'conversation.item.input_audio_transcription.completed') {
         const text = asText(event.delta) || asText(event.transcript); if (text) { if (type.endsWith('completed')) debugLog('realtime.transcript.final', { billingSessionId: input.billingSessionId, speaker: 'talent', chars: text.length }); input.onTranscript?.({ speaker: 'talent', text, isFinal: type.endsWith('completed') }); } return;
       }
@@ -57,7 +59,7 @@ export async function startRealtimeConversation(input: { billingSessionId: strin
   } catch (error) { debugError('realtime.connect_failed', error, { billingSessionId: input.billingSessionId, durationMs: Date.now() - startedAt }); stream.getTracks().forEach((track) => track.stop()); peer.close(); throw error; }
   await peer.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: connection.sdp }));
   debugLog('realtime.connected', { billingSessionId: input.billingSessionId, durationMs: Date.now() - startedAt, maxDurationSeconds: connection.maxDurationSeconds });
-  const meter = setInterval(() => { void peer.getStats().then((stats: unknown) => { let talent = 0; let agent = 0; reportsOf(stats).forEach((report) => { const level = Number(report.audioLevel ?? 0); if (!Number.isFinite(level)) return; if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) agent = Math.max(agent, level); if (report.type === 'media-source' || report.type === 'outbound-rtp') talent = Math.max(talent, level); }); input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) }); }).catch(() => undefined); }, 120);
+  const meter = setInterval(() => { void peer.getStats().then((stats: unknown) => { let talent = 0; let agent = Date.now() - lastAgentAudioEventAt < 280 ? .42 : 0; reportsOf(stats).forEach((report) => { const level = Number(report.audioLevel ?? 0); if (!Number.isFinite(level)) return; if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) agent = Math.max(agent, level); if (report.type === 'media-source' || report.type === 'outbound-rtp') talent = Math.max(talent, level); }); input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) }); }).catch((error) => debugError('realtime.stats_failed', error, { billingSessionId: input.billingSessionId })); }, 120);
   const limit = setTimeout(() => { if (!closing) void close().catch(() => undefined).finally(() => input.onLimit?.()); }, connection.maxDurationSeconds * 1000);
   let closePromise: Promise<RealtimeCloseResult> | undefined;
   const close = () => {
