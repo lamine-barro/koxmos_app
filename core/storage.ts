@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import CryptoJS from 'crypto-js';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
-import { Settings } from 'react-native';
 
 const MASTER_KEY = 'koxmos.local-vault-key.v1';
 const ENVELOPE_PREFIX = 'KOXMOS_LOCAL_V1';
@@ -57,25 +56,17 @@ async function decrypt(value: string) {
   return CryptoJS.AES.decrypt(CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(ciphertext) }), encryptionKey, { iv: CryptoJS.enc.Hex.parse(iv) }).toString(CryptoJS.enc.Utf8);
 }
 
-/** Reads an encrypted value and migrates the former plaintext Settings entry once. */
 export async function readLocal(key: string): Promise<string | null> {
   const persisted = await AsyncStorage.getItem(key);
-  if (persisted) return decrypt(persisted);
-  const legacy = Settings.get(key);
-  if (typeof legacy !== 'string' || !legacy) return null;
-  await writeLocal(key, legacy);
-  Settings.set({ [key]: '' });
-  return legacy;
+  return persisted ? decrypt(persisted) : null;
 }
 
 export async function writeLocal(key: string, value: string): Promise<void> {
   await AsyncStorage.setItem(key, await encrypt(value));
-  Settings.set({ [key]: '' });
 }
 
-/** Destroys both ciphertexts and the device-bound key used to decrypt them. */
+/** Destroys ciphertexts and the device-bound key used to decrypt them. */
 export async function clearLocalVault(keys: string[]): Promise<void> {
   await AsyncStorage.multiRemove(keys);
-  Settings.set(Object.fromEntries(keys.map((key) => [key, ''])));
   await SecureStore.deleteItemAsync(MASTER_KEY, secureStoreOptions);
 }

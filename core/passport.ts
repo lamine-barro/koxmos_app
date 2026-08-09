@@ -3,7 +3,6 @@ import { marketForCountry } from './markets';
 import { readLocal, secureRandomHex, writeLocal } from './storage';
 
 const SKILLS_KEY = 'koxmos.passport.skills.v2';
-const LEGACY_SKILLS_KEY = 'koxmos.passport.skills.v1';
 const EXPORT_ITERATIONS = 600_000;
 
 export type SkillLevel = 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert';
@@ -21,8 +20,7 @@ function cleanSkill(value: unknown): Skill | null {
   const name = item.name.trim().slice(0, 80);
   if (!name) return null;
   const assessment = item.assessment && typeof item.assessment === 'object' ? item.assessment as SkillAssessment : undefined;
-  const legacySource = (item as { source?: unknown }).source;
-  const source: SkillSource = legacySource === 'inferred' || legacySource === 'Évaluée' ? 'inferred' : 'declared';
+  const source: SkillSource = item.source === 'inferred' ? 'inferred' : 'declared';
   const assessmentHistory = Array.isArray(item.assessmentHistory) ? item.assessmentHistory.filter((value): value is SkillAssessment => Boolean(value && typeof value === 'object')).slice(-12) : undefined;
   const rawEvaluation = item.evaluation as Partial<EvaluationProgress> | undefined;
   const evaluation = rawEvaluation && typeof rawEvaluation === 'object' ? { active: Boolean(rawEvaluation.active), questionCount: Math.max(0, Math.min(5, Number(rawEvaluation.questionCount) || 0)), consecutiveSuccesses: Math.max(0, Math.min(5, Number(rawEvaluation.consecutiveSuccesses) || 0)), completed: Boolean(rawEvaluation.completed), passed: Boolean(rawEvaluation.passed), feedback: typeof rawEvaluation.feedback === 'string' ? rawEvaluation.feedback.slice(0, 600) : undefined, updatedAt: typeof rawEvaluation.updatedAt === 'string' ? rawEvaluation.updatedAt : new Date().toISOString() } : undefined;
@@ -38,11 +36,7 @@ function parseSkills(raw: string | null): Skill[] {
 
 export async function loadSkills(): Promise<Skill[]> {
   const current = await readLocal(SKILLS_KEY);
-  if (current) return parseSkills(current);
-  const legacy = await readLocal(LEGACY_SKILLS_KEY);
-  const skills = parseSkills(legacy);
-  if (skills.length) await save(skills);
-  return skills;
+  return parseSkills(current);
 }
 
 async function save(skills: Skill[]) { await writeLocal(SKILLS_KEY, JSON.stringify(skills)); }

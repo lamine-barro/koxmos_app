@@ -4,7 +4,7 @@ import { AgentRequestError } from './errors';
 import type { EvaluationProgress, SkillAssessment, SkillLevel } from './passport';
 import type { TutorKey } from './tutors';
 
-export type AgentReply = { text: string; source: 'local-demo' | 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number };
+export type AgentReply = { text: string; source: 'server'; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; wallet?: Wallet; chargedCredits?: number };
 export type LearningMessage = { id: string; role: 'talent' | 'tuteur'; text: string; mode: 'text' | 'voice'; createdAt: string };
 export type LearningSession = { id: string; skill: string; level: SkillLevel; tutor: string; summary: string; evaluation: EvaluationProgress; messages: LearningMessage[]; updatedAt: string };
 export type Wallet = { balanceFcfa: number; balanceMilliXof: number; balanceCredits: number; creditSeconds: number; pricePerMinuteFcfa: number; textRequestCreditCost: number; updatedAt: string };
@@ -22,18 +22,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export async function createLearningSession(input: { skill: string; level: SkillLevel; tutor: string }): Promise<LearningSession> { return (await request<{ session: LearningSession }>('/v1/learning/sessions', { method: 'POST', body: JSON.stringify(input) })).session; }
 export async function startLearningEvaluation(id: string): Promise<LearningSession> { return (await request<{ session: LearningSession }>(`/v1/learning/${id}/evaluation`, { method: 'POST' })).session; }
-export async function askTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; learningSessionId?: string; message: string }): Promise<AgentReply & { session?: LearningSession }> {
-  if (endpoint) { const data = await request<{ text: string; proposal?: Omit<SkillAssessment, 'assessedAt' | 'tutor'> & { nextExercise?: string }; evaluation?: EvaluationProgress; session?: LearningSession; wallet?: Wallet; chargedCredits?: number }>('/v1/text', { method: 'POST', body: JSON.stringify(input) }); return { text: data.text, source: 'server', proposal: data.proposal, evaluation: data.evaluation, session: data.session, wallet: data.wallet, chargedCredits: data.chargedCredits }; }
-  const focus = input.skill ? ` sur « ${input.skill} »` : '';
-  return { source: 'local-demo', text: `Très bien, ${input.firstName}. Donne-moi un exemple réel${focus} : quel était le contexte, quelle décision as-tu prise et quel résultat as-tu obtenu ?` };
-}
-
 export async function streamTextTutor(input: { firstName: string; country: string; tutorKey?: TutorKey; skill?: string; skillLevel?: SkillLevel; learningSessionId?: string; clientContext?: string; message: string }, onEvent: (event: TextTutorStreamEvent) => void, signal?: AbortSignal): Promise<void> {
-  if (!endpoint) {
-    const reply = await askTextTutor(input);
-    onEvent({ type: 'done', ...reply });
-    return;
-  }
+  if (!endpoint) throw new Error('Configurez EXPO_PUBLIC_KOXMOS_AGENT_URL pour utiliser le tuteur.');
   const url = `${endpoint.replace(/\/$/, '')}/v1/text`;
   const deviceId = await getDeviceId();
   const transportFetch = typeof navigator !== 'undefined' && navigator.product === 'ReactNative' ? expoFetch : fetch;
@@ -45,8 +35,7 @@ export async function streamTextTutor(input: { firstName: string; country: strin
       if (payload) onEvent(JSON.parse(payload) as TextTutorStreamEvent);
     }
   };
-  // Keep a completed-payload fallback for web runtimes without ReadableStream.
-  if (!response.body) { emitFrames(await response.text()); return; }
+  if (!response.body) throw new Error('Le streaming du tuteur est indisponible sur cet appareil.');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';

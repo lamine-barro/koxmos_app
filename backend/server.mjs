@@ -5,14 +5,14 @@ import express from 'express';
 import { Agent, run, tool } from '@openai/agents';
 import { z } from 'zod';
 
-function loadEnvFallback(file) {
+function loadEnvFile(file) {
   if (!existsSync(file)) return;
   for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
     if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
   }
 }
-loadEnvFallback(resolve(import.meta.dirname, '.env'));
+loadEnvFile(resolve(import.meta.dirname, '.env'));
 
 const app = express();
 const port = Number(process.env.PORT || 4242);
@@ -28,7 +28,7 @@ const usageGuardEnabled = process.env.KOXMOS_USAGE_GUARD !== 'false';
 const paymentEnabled = process.env.KOXMOS_BILLING_ENABLED === 'true';
 const pricePerMinuteMilliXof = 100_000; // 100 FCFA, represented in 1/1000 FCFA units.
 const textRequestMilliXof = 25_000; // 0.25 credit, reserved before any OpenAI request.
-const welcomeCreditMilliXof = 10 * pricePerMinuteMilliXof; // Same 10-minute welcome credit as the legacy Koxmos app.
+const welcomeCreditMilliXof = 10 * pricePerMinuteMilliXof;
 const minimumStartBalanceMilliXof = pricePerMinuteMilliXof; // Reserve one minute before opening a metered realtime provider session.
 const rechargePlans = { 30: 3_000, 60: 6_000, 300: 30_000, 600: 60_000 };
 // Realtime providers can bill a connection even when the person leaves almost
@@ -65,9 +65,6 @@ function loadState() {
   catch { return { wallets: {}, sessions: {}, ledger: [], rechargeOrders: {}, flames: {} }; }
 }
 let state = loadState();
-// One-way privacy migration for development registries created by older builds.
-const hadPersistedLearningContent = Boolean(state.learningSessions);
-delete state.learningSessions;
 function publicLearningSession(session) { return { id: session.id, skill: session.skill, level: session.level, tutor: session.tutor, summary: session.summary, evaluation: session.evaluation, messages: session.messages.slice(-learningContextTurns), updatedAt: session.updatedAt }; }
 function learningSession(id, device) { purgeEphemeralLearningSessions(); const session = learningSessions.get(id); return session?.device === device ? session : null; }
 function updateLearningSummary(session) { session.summary = session.messages.slice(-learningContextTurns).map((item) => `${item.role === 'talent' ? 'Talent' : 'Tuteur'}: ${item.text}`).join('\n').slice(-learningContextChars); session.updatedAt = now(); }
@@ -195,7 +192,6 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
 app.use((_request, response, next) => { response.setHeader('Cache-Control', 'no-store'); response.setHeader('Referrer-Policy', 'no-referrer'); response.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
 app.use(rateLimit);
-if (hadPersistedLearningContent) persist();
 app.get('/health', (_request, response) => response.json({ ok: true, storage: 'development-file', usageGuardEnabled, paymentEnabled, voiceProviderConfigured: Boolean(apiKey), realtimeModel, paymentProviderConfigured: paymentEnabled && Boolean(process.env.JEKO_STORE_ID && process.env.JEKO_API_KEY && process.env.JEKO_API_KEY_ID) }));
 app.delete('/v1/account', requireDevice, (request, response) => {
   const device = request.deviceId;
@@ -358,14 +354,13 @@ app.post('/v1/practice', requireDevice, (request, response) => {
   if (!Number.isInteger(seconds) || seconds < 0 || seconds > maxSessionMs / 1000) return response.status(400).json({ error: 'Durée de pratique invalide.' });
   const item = flame(request.deviceId); const today = dateKey(); const practice = item.practiceDays[today] ||= { seconds: 0, rewarded: false };
   practice.seconds += seconds; let rewarded = false;
-  // This intentionally matches the legacy rule: one full one-minute session earns one flame, once per day.
+  // One full one-minute session earns one flame, once per day.
   if (seconds >= 60 && !practice.rewarded) { practice.rewarded = true; item.score += 1; item.lastCheckedDay = today; rewarded = true; }
   persist(); response.json({ flame: item.score, rewarded, practiceSeconds: practice.seconds });
 });
 app.get('/v1/wallet/plans', requireDevice, (_request, response) => response.json({ pricePerMinuteFcfa: 100, plans: Object.entries(rechargePlans).map(([minutes, amountFcfa]) => ({ minutes: Number(minutes), amountFcfa })) }));
 
-// Matches the legacy flow: an order is created server-side, but no balance is credited
-// until the payment provider confirms it through a signed webhook.
+// An order is created server-side, but no balance is credited until the payment provider confirms it through a signed webhook.
 app.post('/v1/wallet/recharge', requireDevice, (request, response) => {
   if (!paymentEnabled) return response.status(404).json({ error: 'Les recharges sont désactivées.' });
   const minutes = Number(request.body?.minutes);

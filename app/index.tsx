@@ -86,7 +86,7 @@ export default function HomeScreen() {
     if (!stored) return true;
     const [hardware, enrolled] = await Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()]);
     if (!hardware || !enrolled) return true;
-    const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Déverrouillez votre passeport Koxmos', cancelLabel: 'Annuler', fallbackLabel: 'Utiliser le code du téléphone', disableDeviceFallback: false });
+    const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Déverrouillez votre passeport Koxmos', cancelLabel: 'Annuler', disableDeviceFallback: true });
     return result.success;
   }
 
