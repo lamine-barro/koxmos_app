@@ -43,8 +43,8 @@ const ledgerRetentionMs = Number(process.env.KOXMOS_LEDGER_RETENTION_DAYS || 730
 // Conversation state is only a short-lived continuity aid. The passport remains
 // local to the phone and is never copied into this store.
 const learningRetentionMs = Math.min(86_400_000, Number(process.env.KOXMOS_LEARNING_SESSION_RETENTION_MINUTES || 30) * 60_000);
-const learningContextTurns = Math.min(8, Math.max(2, Number(process.env.KOXMOS_LEARNING_CONTEXT_TURNS || 6)));
-const learningContextChars = Math.min(1_600, Math.max(600, Number(process.env.KOXMOS_LEARNING_CONTEXT_CHARS || 1_200)));
+const learningContextTurns = Math.min(4, Math.max(2, Number(process.env.KOXMOS_LEARNING_CONTEXT_TURNS || 4)));
+const learningContextChars = Math.min(900, Math.max(600, Number(process.env.KOXMOS_LEARNING_CONTEXT_CHARS || 800)));
 // Enable only while investigating a specific incident. Conversation text can
 // contain personal data, so normal production logs stay metadata-only.
 const debugConversationContent = process.env.KOXMOS_DEBUG_CONVERSATION_CONTENT === 'true';
@@ -348,6 +348,18 @@ function realtimeInstructions({ country, tutor, learning, level, summary }) {
   const startsInEnglish = ['AE', 'EG', 'GH', 'KE', 'NG', 'US'].includes(country);
   return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response under 45 words, concrete, kind, and focused on one next action. Never respond to silence, background noise, fillers, or a simple acknowledgement; wait for a clear learner request or answer.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nWhen the call opens, immediately give one short greeting, name the skill, and ask exactly this choice in the learner’s language: whether they want to work on a specific objective or start the five-question evaluation. Then wait silently for their answer. The supplied context already contains the skill state: do not call get_talent_skill_context at the opening. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per clear answer and call propose_passport_update only after exactly five consecutive successes.`;
 }
+function shouldRespondToTranscript(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value || /^(euh+|hum+|hein|ok|okay|d'accord|oui|non|merci|all[oô])(?:[.!… ]*)$/u.test(value)) return false;
+  return value.length >= 8 || (value.match(/[\p{L}\p{N}']+/gu) || []).length >= 2;
+}
+function requestRealtimeResponse(link, sideband, reason) {
+  if (link.responsePending || sideband.readyState !== WebSocket.OPEN) return false;
+  link.responsePending = true; link.lastResponseRequestedAt = Date.now();
+  sideband.send(JSON.stringify({ type: 'response.create', response: { output_modalities: ['audio'], max_output_tokens: 180 } }));
+  appendConversationLog(link.billingSessionId, link.device, 'response.requested', { reason }); persist();
+  return true;
+}
 
 function realtimeToolOutput(link, name, args, callId) {
   if (link.toolOutputs.has(callId)) { audit('realtime.tool.replayed', { billingSessionId: link.billingSessionId, callId, name }); return link.toolOutputs.get(callId); }
@@ -384,14 +396,15 @@ function addRealtimeUsage(link, responseEvent) {
 }
 function storeRealtimeTranscript(link, event) {
   const text = String(event.transcript || '').trim(); const itemId = typeof event.item_id === 'string' ? event.item_id : '';
-  if (!text || !itemId || link.transcriptItems.has(itemId)) return;
+  if (!text || !itemId || link.transcriptItems.has(itemId)) return null;
   const role = event.type === 'conversation.item.input_audio_transcription.completed' ? 'talent' : event.type === 'response.output_audio_transcript.done' ? 'tuteur' : null;
-  if (!role) return;
+  if (!role) return null;
   link.transcriptItems.add(itemId);
   const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
   if (learning) addLearningMessage(learning, role, text, 'voice');
   appendConversationLog(link.billingSessionId, link.device, 'transcript.final', { role, itemId, text: text.slice(0, 4000) }); persist();
   audit('realtime.transcript.final', { billingSessionId: link.billingSessionId, learningSessionId: link.learningSessionId, role, itemId, ...conversationAuditFields(text) });
+  return { role, text };
 }
 function attachRealtimeSideband(link, callId) {
   return new Promise((resolveSideband, rejectSideband) => {
@@ -403,15 +416,19 @@ function attachRealtimeSideband(link, callId) {
       // event for the call opening, then explicitly request the first audio
       // response so every confirmed call begins with the tutor speaking.
       sideband.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '[Koxmos system event: the learner has just joined the call. Start your short spoken welcome now, name the selected skill, and ask whether they want practice or the evaluation.]' }] } }));
-      sideband.send(JSON.stringify({ type: 'response.create', response: { output_modalities: ['audio'], max_output_tokens: 180 } }));
+      requestRealtimeResponse(link, sideband, 'call_open');
       appendConversationLog(link.billingSessionId, link.device, 'opening.response_requested', { callId }); persist();
       audit('realtime.sideband.connected', { billingSessionId: link.billingSessionId, callId, openingResponseRequested: true }); resolveSideband();
     });
     sideband.once('error', (error) => { clearTimeout(timeout); auditError('realtime.sideband.error', error, { billingSessionId: link.billingSessionId, callId }); rejectSideband(error); });
     sideband.on('message', (message) => {
       let event; try { event = JSON.parse(message.toString()); } catch { return; }
-      storeRealtimeTranscript(link, event);
-      if (event.type === 'response.done') addRealtimeUsage(link, event.response);
+      const transcript = storeRealtimeTranscript(link, event);
+      if (event.type === 'response.done') { addRealtimeUsage(link, event.response); link.responsePending = false; }
+      if (transcript?.role === 'talent') {
+        if (shouldRespondToTranscript(transcript.text)) requestRealtimeResponse(link, sideband, 'talent_transcript');
+        else { appendConversationLog(link.billingSessionId, link.device, 'response.skipped', { reason: 'short_or_filler', chars: transcript.text.length }); persist(); }
+      }
       if (event.type !== 'response.function_call_arguments.done') return;
       const callId = typeof event.call_id === 'string' ? event.call_id : '';
       const name = typeof event.name === 'string' ? event.name : '';
@@ -420,7 +437,10 @@ function attachRealtimeSideband(link, callId) {
       const output = realtimeToolOutput(link, name, args, callId);
       if (sideband.readyState === WebSocket.OPEN) {
         sideband.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output) } }));
-        sideband.send(JSON.stringify({ type: 'response.create' }));
+        // The model is waiting for this tool result; it is safe to schedule
+        // the continuation even though the originating response is pending.
+        link.responsePending = false;
+        requestRealtimeResponse(link, sideband, 'tool_output');
       }
     });
   });
@@ -438,8 +458,8 @@ app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   if (lastStart && Date.now() - lastStart < providerStartCooldownMs && !resume) return response.status(429).json({ error: 'Patientez quelques secondes avant de relancer un tuteur vocal.' });
   const locale = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : 'CI';
   const tutorKey = typeof tutor === 'string' ? tutor.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : '';
-  const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), sideband: null };
-  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 180, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
+  const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), responsePending: false, lastResponseRequestedAt: 0, sideband: null };
+  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 180, reasoning: { effort: 'low' }, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: false, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
   audit('realtime.connect_requested', { traceId: request.traceId, billingSessionId, learningSessionId: learning?.id, device: deviceFingerprint(request.deviceId), tutor: tutorKey, locale, resume: Boolean(resume), skill: link.skill, level: link.level, summaryChars: link.summary.length });
   try {
     const form = new FormData(); form.set('sdp', sdp); form.set('session', JSON.stringify(session));
