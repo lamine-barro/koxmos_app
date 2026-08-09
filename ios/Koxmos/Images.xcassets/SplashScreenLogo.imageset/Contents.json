@@ -1,0 +1,8 @@
+{
+  "images": [
+    { "filename": "koxmos-splash-logo.png", "idiom": "universal", "scale": "1x" },
+    { "filename": "koxmos-splash-logo@2x.png", "idiom": "universal", "scale": "2x" },
+    { "filename": "koxmos-splash-logo@3x.png", "idiom": "universal", "scale": "3x" }
+  ],
+  "info": { "author": "koxmos", "version": 1 }
+}
