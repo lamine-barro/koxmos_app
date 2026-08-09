@@ -2,7 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import * as LocalAuthentication from 'expo-local-authentication';
 import React, { useContext, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Image, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Image, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlignLeft, ArrowLeft, ArrowRight, ArrowUp as LucideArrowUp, AudioLines, Check, ChevronDown, Circle, Download, Eye, EyeOff, Flame, Mic as LucideMic, Plus, Save, Search, Trash2, UserRound, Wallet, X } from 'lucide-react-native';
 import { addTestCredit, createLearningSession, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadFlame, loadWallet, recordPractice, requestRecharge, startLearningEvaluation, startVoiceSession, streamTextTutor, type LearningSession, type TextTutorStreamEvent, type Wallet as WalletData } from '../core/agent';
@@ -361,8 +361,35 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
   const notifyRef = useRef(notify); notifyRef.current = notify;
   const sessionRef = useRef(session); sessionRef.current = session;
   const callRef = useRef(call); callRef.current = call;
-  useEffect(() => { const id = session?.id; if (!id) return; const timer = setInterval(() => heartbeatVoiceSession(id).then(async (result) => { setSession({ id, charged: result.chargedFcfa }); if (result.exhausted) { await call?.close(); setState('Solde épuisé'); setSession(null); setCall(null); notifyRef.current('Solde épuisé', 'Rechargez votre temps pour poursuivre.', 'info'); } }).catch(() => setState('Connexion interrompue')), 5000); return () => clearInterval(timer); }, [session?.id, call]);
-  useEffect(() => () => { const activeSession = sessionRef.current; const activeCall = callRef.current; if (!activeSession) return; void (async () => { await activeCall?.close().catch(() => undefined); await endVoiceSession(activeSession.id).catch(() => undefined); })(); }, []);
+  const pendingSessionId = useRef<string | undefined>(undefined);
+  const mounted = useRef(true);
+  const closing = useRef(false);
+  const heartbeatFailures = useRef(0);
+  async function closeCurrentSession(reason: string, silent = true) {
+    const activeSession = sessionRef.current;
+    if (!activeSession || closing.current) return;
+    closing.current = true;
+    try {
+      debugLog('conversation.voice.forced_stop', { billingSessionId: activeSession.id, reason });
+      const closeResult = await callRef.current?.close().catch(() => undefined);
+      if (closeResult?.proposal) await onProposal(closeResult.proposal);
+      const result = await endVoiceSession(activeSession.id).catch(() => undefined);
+      if (!silent && result) notifyRef.current('Conversation terminée', `${(result.chargedFcfa / 100).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} crédit(s) consommé(s).`);
+    } finally {
+      pendingSessionId.current = undefined;
+      if (mounted.current) { setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); }
+      closing.current = false;
+    }
+  }
+  useEffect(() => { const id = session?.id; if (!id) return; const timer = setInterval(() => heartbeatVoiceSession(id).then(async (result) => { heartbeatFailures.current = 0; setSession({ id, charged: result.chargedFcfa }); if (result.exhausted) { await closeCurrentSession('credit_exhausted'); setState('Solde épuisé'); notifyRef.current('Solde épuisé', 'Rechargez votre temps pour poursuivre.', 'info'); } }).catch((error) => { heartbeatFailures.current += 1; debugError('conversation.voice.heartbeat_failed', error, { billingSessionId: id, failures: heartbeatFailures.current }); if (heartbeatFailures.current >= 2) { void closeCurrentSession('heartbeat_failed'); setState('Connexion interrompue'); } else setState('Reconnexion…'); }), 5000); return () => clearInterval(timer); }, [session?.id, call]);
+  useEffect(() => {
+    mounted.current = true;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'background') return;
+      void closeCurrentSession('app_backgrounded');
+    });
+    return () => { mounted.current = false; subscription.remove(); const activeSession = sessionRef.current; const pendingId = pendingSessionId.current; const activeCall = callRef.current; const id = activeSession?.id || pendingId; if (!id) return; void (async () => { debugLog('conversation.voice.unmounted', { billingSessionId: id, pending: Boolean(pendingId && !activeSession) }); await activeCall?.close().catch(() => undefined); await endVoiceSession(id).catch(() => undefined); })(); };
+  }, []);
   async function toggle(silent = false) {
     if (!session) {
       let billingId: string | undefined;
@@ -372,6 +399,7 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
         debugLog('conversation.voice.start_requested', { learningSessionId: activeLearning.id, skill: skill?.name, tutor: tutor.key, resume: messages.length > 0 });
         const billing = await startVoiceSession(skill?.name || 'Compétence');
         billingId = billing.id;
+        pendingSessionId.current = billing.id;
         const realtime = await startRealtimeConversation({
           billingSessionId: billing.id, learningSessionId: activeLearning.id, country: tutor.countries[0], tutor: tutor.key,
           resume: messages.length > 0, level: skill?.level || 'Débutant', summary: compactConversation(messages) || activeLearning.summary || skill?.assessment?.evidence,
@@ -379,8 +407,12 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
           onLimit: () => { debugLog('conversation.voice.limit_reached', { billingSessionId: billing.id }); setState('Limite de session atteinte'); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); notifyRef.current('Session terminée', 'La limite de session est atteinte. Vous pouvez démarrer une nouvelle session.'); },
           onTranscript: (turn) => { if (turn.isFinal) debugLog('conversation.voice.transcript_final', { billingSessionId: billing.id, speaker: turn.speaker, chars: turn.text.length }); const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => { const last = previous.at(-1); if (last?.role !== event.role) return [...previous, { role: event.role, text: event.text }]; return [...previous.slice(0, -1), { ...last, text: mergeLiveTranscript(last.text, event.text) }]; }); },
         });
+        // The user may have pressed X while permissions/WebRTC were connecting.
+        // Never revive a call after its screen has already been closed.
+        if (!mounted.current || pendingSessionId.current !== billing.id) { await realtime.close().catch(() => undefined); return; }
+        pendingSessionId.current = undefined;
         debugLog('conversation.voice.connected', { billingSessionId: billing.id, learningSessionId: activeLearning.id }); setCall(realtime); setSession({ id: billing.id, charged: 0 }); setState('Tuteur connecté');
-      } catch (error) { debugError('conversation.voice.start_failed', error, { billingSessionId: billingId, learningSessionId: learningSession?.id }); if (billingId) await endVoiceSession(billingId).catch(() => undefined); if (error instanceof AgentRequestError && error.status === 404) resetLearningSession(); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); }
+      } catch (error) { debugError('conversation.voice.start_failed', error, { billingSessionId: billingId, learningSessionId: learningSession?.id }); if (billingId) await endVoiceSession(billingId).catch(() => undefined); pendingSessionId.current = undefined; if (error instanceof AgentRequestError && error.status === 404) resetLearningSession(); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); }
       return;
     }
     const activeSession = session;
