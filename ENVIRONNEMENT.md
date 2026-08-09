@@ -6,7 +6,8 @@ Collez les clés dans [`backend/.env`](./backend/.env). Ce fichier est ignoré p
 
 ```dotenv
 OPENAI_API_KEY=...
-AETHEX_API_KEY=...
+OPENAI_MODEL=gpt-5.6-luna
+OPENAI_REALTIME_MODEL=gpt-realtime-2.1-mini
 JEKO_STORE_ID=...
 JEKO_API_KEY=...
 JEKO_API_KEY_ID=...
@@ -30,9 +31,9 @@ EXPO_PUBLIC_KOXMOS_AGENT_URL=http://192.168.1.4:4242
 
 Ne placez jamais une clé API dans ce fichier : toute variable commençant par `EXPO_PUBLIC_` peut être embarquée dans l'application.
 
-## Kora AI
+## OpenAI Realtime
 
-Configurez seulement côté broker `KOXMOS_KORA_TOOL_URL` (URL HTTPS publique du broker), `KOXMOS_KORA_TOOL_SECRET` et, après création, `AETHEX_DEFAULT_AGENT_ID`. La commande `npm run bootstrap:kora` crée les tuteurs explicitement ; elle n’est jamais lancée automatiquement.
+Le broker crée, après contrôle du portefeuille, un secret éphémère OpenAI pour chaque appel. La clé `OPENAI_API_KEY` reste exclusivement sur le VPS. Les tuteurs Koxmos sont associés côté serveur à des voix OpenAI fixes ; aucune clé, aucun jeton durable et aucun transcript n’est embarqué dans l’application.
 
 ## Facturation vocale
 

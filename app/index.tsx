@@ -5,7 +5,7 @@ import React, { useContext, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Image, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlignLeft, ArrowLeft, ArrowRight, ArrowUp as LucideArrowUp, AudioLines, Check, ChevronDown, Circle, Download, Eye, EyeOff, Flame, Mic as LucideMic, Plus, Save, Search, Trash2, UserRound, Wallet, X } from 'lucide-react-native';
-import { addTestCredit, createLearningSession, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadAethexVoices, loadFlame, loadWallet, recordPractice, requestRecharge, startLearningEvaluation, startVoiceSession, streamTextTutor, type LearningSession, type TextTutorStreamEvent, type Wallet as WalletData } from '../core/agent';
+import { addTestCredit, createLearningSession, deleteRemoteAccount, endVoiceSession, heartbeatVoiceSession, loadFlame, loadWallet, recordPractice, requestRecharge, startLearningEvaluation, startVoiceSession, streamTextTutor, type LearningSession, type TextTutorStreamEvent, type Wallet as WalletData } from '../core/agent';
 import { AgentRequestError } from '../core/errors';
 import { startKoraConversation } from '../core/kora';
 import { clearConversationHistory, deleteConversationHistory, loadConversationHistory, saveConversationHistory, type ConversationHistory } from '../core/history';
@@ -13,7 +13,7 @@ import { addSkill, applyAgentAssessment, applyAssessment, createTransferCode, im
 import { FIRST_NAME_MAX_LENGTH, deleteLocalPassport, type LocalProfile, loadProfile, saveProfile } from '../core/profile';
 import { localeForCountry, MARKETS, marketCodes, type Locale } from '../core/markets';
 import { dateLocale, plural, t } from '../core/i18n';
-import { tutorsForCountry, tutorsFromAethexVoices, type Tutor } from '../core/tutors';
+import { tutorsForCountry, type Tutor } from '../core/tutors';
 
 const MARKET_FLAGS: Record<keyof typeof MARKETS, string> = { CI: '🇨🇮', CM: '🇨🇲', CG: '🇨🇬', FR: '🇫🇷', MA: '🇲🇦', SN: '🇸🇳', TN: '🇹🇳', AE: '🇦🇪', EG: '🇪🇬', GH: '🇬🇭', KE: '🇰🇪', NG: '🇳🇬', US: '🇺🇸' };
 type Page = 'home' | 'skill' | 'text' | 'voice' | 'wallet' | 'transfer' | 'search' | 'profile' | 'profile-details' | 'history';
@@ -108,21 +108,9 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!profile) return;
-    let current = true;
-    setCatalogTutors([]);
-    void loadAethexVoices(profile.country).then((voices) => {
-      if (!current) return;
-      const available = tutorsFromAethexVoices(voices);
-      setCatalogTutors(available);
-      const fallback = tutorsForCountry(profile.country);
-      setTutor((selectedTutor) => available.find((item) => item.voiceId === selectedTutor?.voiceId) || available[0] || fallback[0]);
-    }).catch(() => {
-      if (!current) return;
-      const fallback = tutorsForCountry(profile.country);
-      setCatalogTutors([]);
-      setTutor((selectedTutor) => fallback.find((item) => item.key === selectedTutor?.key) || fallback[0]);
-    });
-    return () => { current = false; };
+    const available = tutorsForCountry(profile.country);
+    setCatalogTutors(available);
+    setTutor((selectedTutor) => available.find((item) => item.key === selectedTutor?.key) || available[0]);
   }, [profile?.country]);
 
   useEffect(() => {
@@ -357,7 +345,7 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
         const billing = await startVoiceSession(skill?.name || 'Compétence');
         billingId = billing.id;
         const kora = await startKoraConversation({
-          billingSessionId: billing.id, learningSessionId: activeLearning.id, country: tutor.countries[0], tutor: tutor.key, voiceId: tutor.voiceId,
+          billingSessionId: billing.id, learningSessionId: activeLearning.id, country: tutor.countries[0], tutor: tutor.key,
           resume: messages.length > 0, level: skill?.level || 'Débutant', summary: compactConversation(messages) || activeLearning.summary || skill?.assessment?.evidence,
           onRemoteStream: () => setState(`${tutor.name} parle`), onStatus: (status) => setState(`Kora : ${status}`), onAudioLevel: setLevels,
           onTranscript: (turn) => { const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => { const last = previous.at(-1); if (last?.role !== event.role) return [...previous, { role: event.role, text: event.text }]; return [...previous.slice(0, -1), { ...last, text: mergeLiveTranscript(last.text, event.text) }]; }); },

@@ -3,97 +3,64 @@ import { NativeModules } from 'react-native';
 import { AgentRequestError } from './errors';
 
 type MediaStream = import('react-native-webrtc').MediaStream;
-
 const endpoint = process.env.EXPO_PUBLIC_KOXMOS_AGENT_URL;
+export type LiveTranscript = { speaker: 'talent' | 'agent'; text: string; isFinal?: boolean };
+export type KoraCloseResult = { proposal?: { level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert'; confidence: number; evidence: string; nextExercise?: string }; evaluation?: { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean } };
 
 async function broker<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!endpoint) throw new Error('Configurez EXPO_PUBLIC_KOXMOS_AGENT_URL.');
   const response = await fetch(`${endpoint.replace(/\/$/, '')}${path}`, { ...init, headers: { 'Content-Type': 'application/json', 'X-Koxmos-Device-Id': await getDeviceId(), ...(init.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new AgentRequestError(data.error || 'Kora est indisponible.', response.status);
+  if (!response.ok) throw new AgentRequestError(data.error || 'OpenAI Realtime est indisponible.', response.status);
   return data as T;
 }
-
-type Bootstrap = { sessionId: string; iceConfig?: unknown };
-export type LiveTranscript = { speaker: 'talent' | 'agent'; text: string; isFinal?: boolean };
-export type KoraCloseResult = { proposal?: { level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert'; confidence: number; evidence: string; nextExercise?: string }; evaluation?: { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean } };
-
 function asText(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
-function readTranscript(raw: string): LiveTranscript | null {
-  try {
-    const event = JSON.parse(raw) as Record<string, unknown>;
-    const type = asText(event.type).toLowerCase();
-    const data = event.data as Record<string, unknown> | undefined;
-    const text = asText(event.text) || asText(event.transcript) || asText(event.delta) || asText(data?.text) || asText(data?.transcript) || asText((event.item as Record<string, unknown> | undefined)?.transcript);
-    if (!text) return null;
-    const speaker = /user|input|talent|caller/.test(type) ? 'talent' : /bot|agent|assistant|output|response/.test(type) ? 'agent' : null;
-    return speaker ? { speaker, text, isFinal: /final|completed|done/.test(type) } : null;
-  } catch { return null; }
-}
-
-function reportsOf(stats: unknown) {
-  if (stats instanceof Map) return [...stats.values()] as Record<string, unknown>[];
-  if (Array.isArray(stats)) return stats as Record<string, unknown>[];
-  return Object.values(stats as Record<string, Record<string, unknown>>);
-}
+function reportsOf(stats: unknown) { return stats instanceof Map ? [...stats.values()] as Record<string, unknown>[] : Array.isArray(stats) ? stats as Record<string, unknown>[] : Object.values(stats as Record<string, Record<string, unknown>>); }
 
 export async function startKoraConversation(input: { billingSessionId: string; learningSessionId?: string; country?: string; level: string; summary?: string; tutor?: string; voiceId?: string; resume?: boolean; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
-  if (!NativeModules.WebRTCModule && !NativeModules.RTCModule) {
-    throw new Error('La fonction vocale nécessite une version récente de Koxmos sur ce téléphone.');
-  }
+  if (!NativeModules.WebRTCModule && !NativeModules.RTCModule) throw new Error('La fonction vocale nécessite une version récente de Koxmos sur ce téléphone.');
   const { mediaDevices, RTCPeerConnection, RTCSessionDescription } = require('react-native-webrtc') as typeof import('react-native-webrtc');
-  const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, country: input.country, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId, resume: input.resume === true }) });
+  const token = await broker<{ value: string; maxDurationSeconds: number }>('/v1/realtime/token', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, country: input.country, level: input.level, summary: input.summary, tutor: input.tutor, resume: input.resume === true }) });
   const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
-  const peer = new RTCPeerConnection((bootstrap.iceConfig || {}) as any);
-  let peerConnectionId = ''; const pendingCandidates: Array<{ candidate: string; sdp_mid: string; sdp_mline_index: number }> = []; let iceTimer: ReturnType<typeof setTimeout> | undefined;
-  const flushCandidates = async () => { if (!peerConnectionId || !pendingCandidates.length) return; const candidates = pendingCandidates.splice(0, pendingCandidates.length); await broker(`/v1/kora/${bootstrap.sessionId}/ice`, { method: 'POST', body: JSON.stringify({ pc_id: peerConnectionId, candidates }) }); };
-  const scheduleIceFlush = () => { if (!peerConnectionId) return; if (iceTimer) clearTimeout(iceTimer); iceTimer = setTimeout(() => { iceTimer = undefined; void flushCandidates(); }, 200); };
+  const peer = new RTCPeerConnection();
   stream.getTracks().forEach((track) => peer.addTrack(track, stream));
   peer.ontrack = (event: any) => { if (event.streams[0]) input.onRemoteStream(event.streams[0]); };
-  const listenForTranscripts = (channel: any) => {
-    channel.onmessage = (message: any) => {
-      const turn = readTranscript(String(message.data || ''));
-      if (turn) input.onTranscript?.(turn);
-    };
-  };
-  // Aethex sends live user and tutor transcription through this negotiated channel.
-  listenForTranscripts(peer.createDataChannel('chat', { ordered: true }));
-  peer.ondatachannel = (event: any) => listenForTranscripts(event.channel);
   peer.onconnectionstatechange = () => input.onStatus(peer.connectionState);
-  peer.onicecandidate = (event: any) => {
-    const candidate = event.candidate;
-    if (!candidate?.candidate) return;
-    pendingCandidates.push({ candidate: candidate.candidate, sdp_mid: candidate.sdpMid || '', sdp_mline_index: candidate.sdpMLineIndex || 0 });
-    scheduleIceFlush();
+  const channel = peer.createDataChannel('oai-events', { ordered: true });
+  let closing = false;
+  const send = (event: Record<string, unknown>) => { if (channel.readyState === 'open') channel.send(JSON.stringify(event)); };
+  channel.onmessage = (message: any) => {
+    try {
+      const event = JSON.parse(String(message.data || '')) as Record<string, any>;
+      const type = asText(event.type);
+      if (type === 'conversation.item.input_audio_transcription.delta' || type === 'conversation.item.input_audio_transcription.completed') {
+        const text = asText(event.delta) || asText(event.transcript); if (text) input.onTranscript?.({ speaker: 'talent', text, isFinal: type.endsWith('completed') }); return;
+      }
+      if (type === 'response.output_audio_transcript.delta' || type === 'response.output_audio_transcript.done') {
+        const text = asText(event.delta) || asText(event.transcript); if (text) input.onTranscript?.({ speaker: 'agent', text, isFinal: type.endsWith('done') }); return;
+      }
+      if (type === 'response.done' && event.response?.usage) { void broker(`/v1/realtime/${input.billingSessionId}/usage`, { method: 'POST', body: JSON.stringify({ usage: event.response.usage }) }).catch(() => undefined); return; }
+      if (type === 'response.function_call_arguments.done') {
+        const name = asText(event.name); const callId = asText(event.call_id); let args: unknown = {};
+        try { args = JSON.parse(asText(event.arguments) || '{}'); } catch { args = {}; }
+        void broker(`/v1/realtime/${input.billingSessionId}/tool`, { method: 'POST', body: JSON.stringify({ name, arguments: args }) }).then((output) => {
+          send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output) } }); send({ type: 'response.create' });
+        }).catch((error) => { send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ accepted: false, error: error instanceof Error ? error.message : 'Outil indisponible.' }) } }); send({ type: 'response.create' }); });
+      }
+    } catch { /* Ignore malformed provider events without breaking audio. */ }
   };
   const offer = await peer.createOffer({ offerToReceiveAudio: true }); await peer.setLocalDescription(offer);
-  const answer = await broker<{ sdp: string; type?: string; pc_id: string }>(`/v1/kora/${bootstrap.sessionId}/offer`, { method: 'POST', body: JSON.stringify({ sdp: offer.sdp }) });
-  peerConnectionId = answer.pc_id; await peer.setRemoteDescription(new RTCSessionDescription({ type: answer.type || 'answer', sdp: answer.sdp })); await flushCandidates();
-  const meter = setInterval(() => {
-    void peer.getStats().then((stats: unknown) => {
-      let talent = 0; let agent = 0;
-      reportsOf(stats).forEach((report) => {
-        const level = Number(report.audioLevel ?? 0);
-        if (!Number.isFinite(level)) return;
-        if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) agent = Math.max(agent, level);
-        if (report.type === 'media-source' || report.type === 'outbound-rtp') talent = Math.max(talent, level);
-      });
-      input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) });
-    }).catch(() => undefined);
-  }, 120);
+  const answer = await fetch('https://api.openai.com/v1/realtime/calls', { method: 'POST', headers: { Authorization: `Bearer ${token.value}`, 'Content-Type': 'application/sdp' }, body: offer.sdp || '' });
+  if (!answer.ok) { stream.getTracks().forEach((track) => track.stop()); peer.close(); throw new Error('La négociation OpenAI Realtime a échoué.'); }
+  await peer.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: await answer.text() }));
+  const meter = setInterval(() => { void peer.getStats().then((stats: unknown) => { let talent = 0; let agent = 0; reportsOf(stats).forEach((report) => { const level = Number(report.audioLevel ?? 0); if (!Number.isFinite(level)) return; if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) agent = Math.max(agent, level); if (report.type === 'media-source' || report.type === 'outbound-rtp') talent = Math.max(talent, level); }); input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) }); }).catch(() => undefined); }, 120);
+  const limit = setTimeout(() => { if (!closing) void close(); }, token.maxDurationSeconds * 1000);
   let closePromise: Promise<KoraCloseResult> | undefined;
-  return {
-    sessionId: bootstrap.sessionId,
-    close: () => {
-      if (closePromise) return closePromise;
-      closePromise = (async () => {
-        // Release local audio immediately, even if the provider is unavailable.
-        clearInterval(meter); if (iceTimer) clearTimeout(iceTimer);
-        stream.getTracks().forEach((track) => track.stop());
-        peer.close();
-        return broker<KoraCloseResult>(`/v1/kora/${bootstrap.sessionId}/end`, { method: 'POST' });
-      })();
-      return closePromise;
-    },
+  const close = () => {
+    if (closePromise) return closePromise;
+    closing = true;
+    closePromise = (async () => { clearTimeout(limit); clearInterval(meter); stream.getTracks().forEach((track) => track.stop()); channel.close(); peer.close(); return broker<KoraCloseResult>(`/v1/realtime/${input.billingSessionId}/end`, { method: 'POST' }); })();
+    return closePromise;
   };
+  return { sessionId: input.billingSessionId, close };
 }

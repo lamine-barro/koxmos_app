@@ -9,7 +9,6 @@ export type LearningMessage = { id: string; role: 'talent' | 'tuteur'; text: str
 export type LearningSession = { id: string; skill: string; level: SkillLevel; tutor: string; summary: string; evaluation: EvaluationProgress; messages: LearningMessage[]; updatedAt: string };
 export type Wallet = { balanceFcfa: number; balanceMilliXof: number; balanceCredits: number; creditSeconds: number; pricePerMinuteFcfa: number; textRequestCreditCost: number; updatedAt: string };
 export type VoiceSession = { id: string; startedAt: string; pricePerMinuteFcfa: number; voiceConfigured: boolean };
-export type AethexVoice = { id: string; name: string; language: string; gender?: string; country?: string; supportsDialectStyle?: boolean };
 export type TextTutorStreamEvent = { type: 'delta'; delta: string } | { type: 'done'; text: string; proposal?: AgentReply['proposal']; evaluation?: EvaluationProgress; session?: LearningSession; wallet?: Wallet; chargedCredits?: number };
 const endpoint = process.env.EXPO_PUBLIC_KOXMOS_AGENT_URL;
 
@@ -69,5 +68,4 @@ export async function addTestCredit(amountFcfa: number): Promise<Wallet> { retur
 export async function startVoiceSession(skill: string): Promise<VoiceSession> { const data = await request<{ session: Omit<VoiceSession, 'voiceConfigured'>; voice: { configured: boolean } }>('/v1/sessions', { method: 'POST', body: JSON.stringify({ skill }) }); return { ...data.session, voiceConfigured: data.voice.configured }; }
 export async function heartbeatVoiceSession(id: string): Promise<{ status: string; chargedFcfa: number; exhausted: boolean; wallet: Wallet }> { return request(`/v1/sessions/${id}/heartbeat`, { method: 'POST' }); }
 export async function endVoiceSession(id: string): Promise<{ status: string; chargedFcfa: number; durationSeconds: number; wallet: Wallet }> { return request(`/v1/sessions/${id}/end`, { method: 'POST' }); }
-export async function loadAethexVoices(country = 'CI'): Promise<AethexVoice[]> { return (await request<{ voices: AethexVoice[] }>(`/v1/kora/voices?country=${encodeURIComponent(country)}`)).voices; }
 export async function deleteRemoteAccount(): Promise<void> { await request('/v1/account', { method: 'DELETE' }); }

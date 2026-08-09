@@ -7,12 +7,10 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "bootstrap:kora": "node scripts/bootstrap-kora.mjs",
-    "check": "node --check server.mjs && node --check scripts/bootstrap-kora.mjs"
+    "check": "node --check server.mjs"
   },
   "dependencies": {
     "@openai/agents": "^0.14.3",
-    "aethexai": "^1.0.0",
     "express": "^5.1.0",
     "zod": "^4.4.3"
   }
