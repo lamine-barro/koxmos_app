@@ -1,6 +1,8 @@
 type DebugFields = Record<string, unknown>;
 
-const enabled = __DEV__ || process.env.EXPO_PUBLIC_KOXMOS_DEBUG === 'true';
+// Diagnostic metadata stays enabled in device builds unless explicitly turned
+// off. It never includes credentials, SDP or conversation text by default.
+const enabled = process.env.EXPO_PUBLIC_KOXMOS_DEBUG !== 'false';
 
 function clean(value: unknown): unknown {
   if (typeof value === 'string') return value.length > 1_200 ? `${value.slice(0, 1_200)}…` : value;
