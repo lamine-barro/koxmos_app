@@ -13,7 +13,7 @@ npm start -- --lan
 
 4. Scannez le QR code avec l’app Expo Go.
 
-Vous pourrez tester le parcours complet local : prénom + pays, passeport, compétences, changement GPT/Kora, tuteur texte de démonstration, écran vocal Kora et export/import chiffré.
+Vous pourrez tester le parcours complet local : prénom + pays, passeport, compétences, changement texte/voix, tuteur texte de démonstration, écran vocal et export/import chiffré.
 
 ## Activer GPT-5 mini réel sur le réseau local
 
@@ -43,6 +43,6 @@ EXPO_PUBLIC_KOXMOS_AGENT_URL=http://192.168.1.10:4242
 
 Le broker utilise GPT-5 mini via la Responses API avec `store: false`. Il ne reçoit jamais le passeport complet : il garde seulement une courte fenêtre de conversation, configurable et purgée après 7 jours par défaut, afin que le tuteur puisse reprendre une séance. Les réponses texte sont diffusées progressivement et peuvent être arrêtées dans l’application.
 
-## Aethex Kora AI
+## OpenAI Realtime
 
-Le parcours vocal et son interface sont prêts à tester, mais l’appel réel exige les paramètres AethexAI : URL/SDK mobile, format audio, jeton court et politique de rétention. Ne mettez aucune clé AethexAI dans l’application.
+Le parcours vocal exige `OPENAI_API_KEY` uniquement dans `backend/.env`. Le mobile obtient un secret éphémère du broker, puis se connecte directement à OpenAI Realtime en WebRTC. Ne mettez jamais de clé OpenAI dans l’application.

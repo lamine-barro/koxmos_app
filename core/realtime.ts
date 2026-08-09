@@ -5,7 +5,7 @@ import { AgentRequestError } from './errors';
 type MediaStream = import('react-native-webrtc').MediaStream;
 const endpoint = process.env.EXPO_PUBLIC_KOXMOS_AGENT_URL;
 export type LiveTranscript = { speaker: 'talent' | 'agent'; text: string; isFinal?: boolean };
-export type KoraCloseResult = { proposal?: { level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert'; confidence: number; evidence: string; nextExercise?: string }; evaluation?: { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean } };
+export type RealtimeCloseResult = { proposal?: { level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert'; confidence: number; evidence: string; nextExercise?: string }; evaluation?: { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean } };
 
 async function broker<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!endpoint) throw new Error('Configurez EXPO_PUBLIC_KOXMOS_AGENT_URL.');
@@ -17,7 +17,7 @@ async function broker<T>(path: string, init: RequestInit = {}): Promise<T> {
 function asText(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
 function reportsOf(stats: unknown) { return stats instanceof Map ? [...stats.values()] as Record<string, unknown>[] : Array.isArray(stats) ? stats as Record<string, unknown>[] : Object.values(stats as Record<string, Record<string, unknown>>); }
 
-export async function startKoraConversation(input: { billingSessionId: string; learningSessionId?: string; country?: string; level: string; summary?: string; tutor?: string; voiceId?: string; resume?: boolean; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
+export async function startRealtimeConversation(input: { billingSessionId: string; learningSessionId?: string; country?: string; level: string; summary?: string; tutor?: string; resume?: boolean; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
   if (!NativeModules.WebRTCModule && !NativeModules.RTCModule) throw new Error('La fonction vocale nécessite une version récente de Koxmos sur ce téléphone.');
   const { mediaDevices, RTCPeerConnection, RTCSessionDescription } = require('react-native-webrtc') as typeof import('react-native-webrtc');
   const token = await broker<{ value: string; maxDurationSeconds: number }>('/v1/realtime/token', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, country: input.country, level: input.level, summary: input.summary, tutor: input.tutor, resume: input.resume === true }) });
@@ -55,11 +55,11 @@ export async function startKoraConversation(input: { billingSessionId: string; l
   await peer.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: await answer.text() }));
   const meter = setInterval(() => { void peer.getStats().then((stats: unknown) => { let talent = 0; let agent = 0; reportsOf(stats).forEach((report) => { const level = Number(report.audioLevel ?? 0); if (!Number.isFinite(level)) return; if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) agent = Math.max(agent, level); if (report.type === 'media-source' || report.type === 'outbound-rtp') talent = Math.max(talent, level); }); input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) }); }).catch(() => undefined); }, 120);
   const limit = setTimeout(() => { if (!closing) void close(); }, token.maxDurationSeconds * 1000);
-  let closePromise: Promise<KoraCloseResult> | undefined;
+  let closePromise: Promise<RealtimeCloseResult> | undefined;
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
-    closePromise = (async () => { clearTimeout(limit); clearInterval(meter); stream.getTracks().forEach((track) => track.stop()); channel.close(); peer.close(); return broker<KoraCloseResult>(`/v1/realtime/${input.billingSessionId}/end`, { method: 'POST' }); })();
+    closePromise = (async () => { clearTimeout(limit); clearInterval(meter); stream.getTracks().forEach((track) => track.stop()); channel.close(); peer.close(); return broker<RealtimeCloseResult>(`/v1/realtime/${input.billingSessionId}/end`, { method: 'POST' }); })();
     return closePromise;
   };
   return { sessionId: input.billingSessionId, close };
