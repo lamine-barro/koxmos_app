@@ -41,7 +41,7 @@ EXPO_PUBLIC_KOXMOS_AGENT_URL=http://192.168.1.10:4242
 
 5. Redémarrez Expo avec `npm start -- --lan`, puis rechargez l’app sur l’iPhone.
 
-Le broker utilise GPT-5 mini via la Responses API, avec `store: false`, ne journalise pas le contenu et ne garde aucun passeport ou transcript. GPT-5 mini prend en charge le streaming ; la version actuelle du broker renvoie la réponse entière, le streaming mot par mot est la prochaine intégration UI.
+Le broker utilise GPT-5 mini via la Responses API avec `store: false`. Il ne reçoit jamais le passeport complet : il garde seulement une courte fenêtre de conversation, configurable et purgée après 7 jours par défaut, afin que le tuteur puisse reprendre une séance. Les réponses texte sont diffusées progressivement et peuvent être arrêtées dans l’application.
 
 ## Aethex Kora AI
 

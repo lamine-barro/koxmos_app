@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.koxmos.os",
-      "permissions": ["RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS", "POST_NOTIFICATIONS"]
+      "permissions": ["RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS"]
     },
     "plugins": [
       "expo-router",
@@ -25,7 +25,13 @@
           "faceIDPermission": "Autorisez Koxmos à utiliser Face ID pour protéger votre passeport local."
         }
       ],
-      "expo-notifications"
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Autorisez Koxmos à protéger votre passeport local avec Face ID."
+        }
+      ]
     ]
   }
 }

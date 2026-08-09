@@ -1,5 +1,6 @@
 import { getDeviceId } from './profile';
 import { NativeModules } from 'react-native';
+import { AgentRequestError } from './errors';
 
 type MediaStream = import('react-native-webrtc').MediaStream;
 
@@ -9,12 +10,13 @@ async function broker<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!endpoint) throw new Error('Configurez EXPO_PUBLIC_KOXMOS_AGENT_URL.');
   const response = await fetch(`${endpoint.replace(/\/$/, '')}${path}`, { ...init, headers: { 'Content-Type': 'application/json', 'X-Koxmos-Device-Id': await getDeviceId(), ...(init.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Kora est indisponible.');
+  if (!response.ok) throw new AgentRequestError(data.error || 'Kora est indisponible.', response.status);
   return data as T;
 }
 
 type Bootstrap = { sessionId: string; iceConfig?: unknown };
 export type LiveTranscript = { speaker: 'talent' | 'agent'; text: string; isFinal?: boolean };
+export type KoraCloseResult = { proposal?: { level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert'; confidence: number; evidence: string; nextExercise?: string }; evaluation?: { active: boolean; questionCount: number; consecutiveSuccesses: number; completed: boolean; passed: boolean } };
 
 function asText(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
 function readTranscript(raw: string): LiveTranscript | null {
@@ -35,12 +37,12 @@ function reportsOf(stats: unknown) {
   return Object.values(stats as Record<string, Record<string, unknown>>);
 }
 
-export async function startKoraConversation(input: { billingSessionId: string; learningSessionId?: string; level: string; summary?: string; tutor?: string; voiceId?: string; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
+export async function startKoraConversation(input: { billingSessionId: string; learningSessionId?: string; country?: string; level: string; summary?: string; tutor?: string; voiceId?: string; resume?: boolean; onRemoteStream: (stream: MediaStream) => void; onStatus: (status: string) => void; onAudioLevel?: (levels: { talent: number; agent: number }) => void; onTranscript?: (turn: LiveTranscript) => void }) {
   if (!NativeModules.WebRTCModule && !NativeModules.RTCModule) {
     throw new Error('La fonction vocale nécessite une version récente de Koxmos sur ce téléphone.');
   }
   const { mediaDevices, RTCPeerConnection, RTCSessionDescription } = require('react-native-webrtc') as typeof import('react-native-webrtc');
-  const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId }) });
+  const bootstrap = await broker<Bootstrap>('/v1/kora/connect', { method: 'POST', body: JSON.stringify({ billingSessionId: input.billingSessionId, learningSessionId: input.learningSessionId, country: input.country, level: input.level, summary: input.summary, tutor: input.tutor, voiceId: input.voiceId, resume: input.resume === true }) });
   const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
   const peer = new RTCPeerConnection((bootstrap.iceConfig || {}) as any);
   let peerConnectionId = ''; const pendingCandidates: Array<{ candidate: string; sdp_mid: string; sdp_mline_index: number }> = []; let iceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -79,7 +81,7 @@ export async function startKoraConversation(input: { billingSessionId: string; l
       input.onAudioLevel?.({ talent: Math.min(1, talent * 3), agent: Math.min(1, agent * 3) });
     }).catch(() => undefined);
   }, 120);
-  let closePromise: Promise<void> | undefined;
+  let closePromise: Promise<KoraCloseResult> | undefined;
   return {
     sessionId: bootstrap.sessionId,
     close: () => {
@@ -89,7 +91,7 @@ export async function startKoraConversation(input: { billingSessionId: string; l
         clearInterval(meter); if (iceTimer) clearTimeout(iceTimer);
         stream.getTracks().forEach((track) => track.stop());
         peer.close();
-        await broker(`/v1/kora/${bootstrap.sessionId}/end`, { method: 'POST' });
+        return broker<KoraCloseResult>(`/v1/kora/${bootstrap.sessionId}/end`, { method: 'POST' });
       })();
       return closePromise;
     },

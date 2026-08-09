@@ -2,9 +2,13 @@
   "name": "koxmos-local-agent-broker",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "start": "node server.mjs",
-    "bootstrap:kora": "node scripts/bootstrap-kora.mjs"
+    "bootstrap:kora": "node scripts/bootstrap-kora.mjs",
+    "check": "node --check server.mjs && node --check scripts/bootstrap-kora.mjs"
   },
   "dependencies": {
     "@openai/agents": "^0.14.3",

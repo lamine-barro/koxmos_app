@@ -13,6 +13,8 @@ Le principe produit est simple : **ni inscription, ni OTP, ni compte cloud**. Au
 
 Le plan exécutable, les décisions d'architecture, les phases et critères de validation sont dans [PLAN_MIGRATION.md](./PLAN_MIGRATION.md).
 
+L’architecture effectivement auditée, le workflow multimodal texte ↔ voix, les optimisations appliquées et les risques de production sont documentés dans [ARCHITECTURE_AUDIT.md](./ARCHITECTURE_AUDIT.md). `PLAN_MIGRATION.md` reste un document cible historique : en cas d’écart, l’audit décrit l’état réel du code.
+
 Le MVP inclut un passeport local protégé par le verrouillage de l'appareil, des mises à jour IA automatiques mais soumises à des garde-fous pédagogiques, un portefeuille pseudonyme et un compteur serveur à la seconde pour les sessions vocales (`100 FCFA/minute`). Le broker de facturation est délibérément limité au développement tant qu'un registre PostgreSQL transactionnel n'est pas implémenté. Le transport vocal AethexAI et le paiement Mobile Money ne doivent être activés qu'après fourniture des contrats, SDK, URLs de session, jetons courts et webhooks vérifiés des fournisseurs.
 
 ## Périmètre

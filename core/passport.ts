@@ -1,6 +1,6 @@
 import CryptoJS from 'crypto-js';
 import { marketForCountry } from './markets';
-import { readLocal, writeLocal } from './storage';
+import { readLocal, secureRandomHex, writeLocal } from './storage';
 
 const SKILLS_KEY = 'koxmos.passport.skills.v2';
 const LEGACY_SKILLS_KEY = 'koxmos.passport.skills.v1';
@@ -13,15 +13,6 @@ export type EvaluationProgress = { active: boolean; questionCount: number; conse
 export type Skill = { id: string; name: string; level: SkillLevel; source: SkillSource; isHidden: boolean; updatedAt: string; assessment?: SkillAssessment; assessmentHistory?: SkillAssessment[]; evaluation?: EvaluationProgress };
 
 const LEVELS: SkillLevel[] = ['Débutant', 'Intermédiaire', 'Avancé', 'Expert'];
-
-// The installed development build has no native secure-random provider.
-// This keeps local IDs and the temporary development export working; the
-// signed release uses the platform secure store and native crypto modules.
-function randomHex(bytes: number) {
-  let value = '';
-  for (let index = 0; index < bytes; index += 1) value += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
-  return value;
-}
 
 function cleanSkill(value: unknown): Skill | null {
   if (!value || typeof value !== 'object') return null;
@@ -61,7 +52,7 @@ export async function addSkill(name: string): Promise<Skill[]> {
   if (!normalized) throw new Error('Saisissez une compétence valide.');
   const skills = await loadSkills();
   if (skills.some((skill) => skill.name.localeCompare(normalized, undefined, { sensitivity: 'accent' }) === 0)) throw new Error('Cette compétence est déjà dans votre passeport.');
-  const skill: Skill = { id: randomHex(16), name: normalized, level: 'Débutant', source: 'declared', isHidden: false, updatedAt: new Date().toISOString() };
+  const skill: Skill = { id: await secureRandomHex(16), name: normalized, level: 'Débutant', source: 'declared', isHidden: false, updatedAt: new Date().toISOString() };
   const next = [skill, ...skills]; await save(next); return next;
 }
 
@@ -105,10 +96,18 @@ export async function applyAgentAssessment(name: string, assessment: SkillAssess
   if (!normalized) throw new Error('Compétence invalide.');
   const skills = await loadSkills();
   const existing = skills.find((skill) => skill.name.localeCompare(normalized, undefined, { sensitivity: 'accent' }) === 0);
-  if (existing) return applyAssessment(existing.id, assessment);
+  // Voice proposals have already passed the broker's five-question guardrail.
+  // Keep the same evidence/confidence and one-level constraints locally.
+  if (existing) {
+    if (!LEVELS.includes(assessment.level) || assessment.confidence < 0.7 || assessment.evidence.trim().length < 80) throw new Error('Évaluation insuffisamment étayée.');
+    if (Math.abs(LEVELS.indexOf(assessment.level) - LEVELS.indexOf(existing.level)) > 1) throw new Error('Une évaluation ne peut faire évoluer qu’un niveau à la fois.');
+    const reviewed = { ...assessment, previousLevel: existing.level, evidence: assessment.evidence.trim().slice(0, 800), nextExercise: assessment.nextExercise?.trim().slice(0, 400) };
+    const next = skills.map((skill) => skill.id === existing.id ? { ...skill, level: assessment.level, source: 'inferred' as const, assessment: reviewed, assessmentHistory: [...(skill.assessmentHistory || []), reviewed].slice(-12), evaluation: { active: false, questionCount: 5, consecutiveSuccesses: 5, completed: true, passed: true, updatedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } : skill);
+    await save(next); return next;
+  }
   if (!LEVELS.includes(assessment.level) || assessment.confidence < 0.7 || assessment.evidence.trim().length < 80) throw new Error('Évaluation insuffisamment étayée.');
   const reviewed = { ...assessment, evidence: assessment.evidence.trim().slice(0, 800), nextExercise: assessment.nextExercise?.trim().slice(0, 400) };
-  const skill: Skill = { id: randomHex(16), name: normalized, level: assessment.level, source: 'inferred', isHidden: false, assessment: reviewed, assessmentHistory: [reviewed], updatedAt: new Date().toISOString() };
+  const skill: Skill = { id: await secureRandomHex(16), name: normalized, level: assessment.level, source: 'inferred', isHidden: false, assessment: reviewed, assessmentHistory: [reviewed], updatedAt: new Date().toISOString() };
   const next = [skill, ...skills]; await save(next); return next;
 }
 
@@ -126,11 +125,11 @@ export function searchSkills(skills: Skill[], query: string, includeHidden = tru
 
 export async function createTransferCode(profile: { firstName: string; country: string }, skills: Skill[], passphrase: string): Promise<string> {
   if (passphrase.trim().length < 12) throw new Error('Choisissez une phrase secrète d’au moins 12 caractères.');
-  const salt = randomHex(16);
+  const salt = await secureRandomHex(16);
   const material = CryptoJS.PBKDF2(passphrase, salt, { keySize: 512 / 32, iterations: EXPORT_ITERATIONS, hasher: CryptoJS.algo.SHA256 });
   const encryptionKey = CryptoJS.lib.WordArray.create(material.words.slice(0, 8), 32);
   const authenticationKey = CryptoJS.lib.WordArray.create(material.words.slice(8, 16), 32);
-  const iv = randomHex(16);
+  const iv = await secureRandomHex(16);
   const payload = JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), profile, skills });
   const ciphertext = CryptoJS.AES.encrypt(payload, encryptionKey, { iv: CryptoJS.enc.Hex.parse(iv) }).ciphertext.toString(CryptoJS.enc.Base64);
   const mac = CryptoJS.HmacSHA256(`${salt}.${iv}.${ciphertext}`, authenticationKey).toString();
