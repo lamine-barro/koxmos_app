@@ -14,6 +14,7 @@ import { FIRST_NAME_MAX_LENGTH, deleteLocalPassport, type LocalProfile, loadProf
 import { localeForCountry, MARKETS, marketCodes, type Locale } from '../core/markets';
 import { dateLocale, plural, t } from '../core/i18n';
 import { tutorsForCountry, type Tutor } from '../core/tutors';
+import { debugError, debugLog } from '../core/debug';
 
 const MARKET_FLAGS: Record<keyof typeof MARKETS, string> = { CI: '🇨🇮', CM: '🇨🇲', CG: '🇨🇬', FR: '🇫🇷', MA: '🇲🇦', SN: '🇸🇳', TN: '🇹🇳', AE: '🇦🇪', EG: '🇪🇬', GH: '🇬🇭', KE: '🇰🇪', NG: '🇳🇬', US: '🇺🇸' };
 type Page = 'home' | 'skill' | 'text' | 'voice' | 'wallet' | 'transfer' | 'search' | 'profile' | 'profile-details' | 'history';
@@ -106,6 +107,8 @@ export default function HomeScreen() {
     return () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); };
   }, []);
 
+  useEffect(() => { debugLog('navigation.page_view', { page, selectedSkill: selected?.name, tutor: tutor?.key, learningSessionId: learningSession?.id }); }, [page, selected?.id, tutor?.key, learningSession?.id]);
+
   useEffect(() => {
     if (!profile) return;
     const available = tutorsForCountry(profile.country);
@@ -143,7 +146,9 @@ export default function HomeScreen() {
 
   async function chat() {
     if (!profile || !draft.trim() || working) return;
-    const text = draft.trim(); const activeLearning = await ensureLearningSession(); if (!activeLearning) return; setDraft(''); setMessages((items) => [...items, { role: 'talent', text }, { role: 'tuteur', text: '' }]); setWorking(true);
+    const text = draft.trim(); const activeLearning = await ensureLearningSession(); if (!activeLearning) return;
+    debugLog('conversation.text.send', { learningSessionId: activeLearning.id, skill: selected?.name, tutor: tutor?.key, chars: text.length, evaluationActive: selected?.evaluation?.active });
+    setDraft(''); setMessages((items) => [...items, { role: 'talent', text }, { role: 'tuteur', text: '' }]); setWorking(true);
     try {
       replyAbort.current = new AbortController();
       const handleEvent = async (event: TextTutorStreamEvent) => {
@@ -155,6 +160,7 @@ export default function HomeScreen() {
         if (event.wallet) setWallet(event.wallet);
         const chargedCredits = event.chargedCredits; if (chargedCredits) setTextConversationCredits((total) => total + chargedCredits);
         if (event.proposal && selected) { const proposal = { ...event.proposal, assessedAt: new Date().toISOString(), tutor: 'Koxmos AI' }; const next = await applyAssessment(selected.id, proposal); setSkills(next); setSelected(next.find((item) => item.id === selected.id)); notify(tr('passportUpdated'), tr('passportUpdatedCopy', { name: selected.name, level: proposal.level })); }
+        debugLog('conversation.text.completed', { learningSessionId: activeLearning.id, responseChars: event.text.length, chargedCredits: event.chargedCredits, evaluation: event.evaluation, proposal: event.proposal?.level });
       };
       const send = (session: LearningSession) => streamTextTutor({ firstName: profile.firstName, country: profile.country, tutorKey: tutor?.key, skill: selected?.name, skillLevel: selected?.level, learningSessionId: session.id, clientContext: compactConversation(messages), message: text }, handleEvent, replyAbort.current?.signal);
       try { await send(activeLearning); }
@@ -163,14 +169,15 @@ export default function HomeScreen() {
         const recreated = await createLearningSession({ skill: selected.name, level: selected.level, tutor: tutor?.name || 'Koxmos' });
         setLearningSession(recreated); await send(recreated);
       }
-    } catch (error) { setMessages((items) => items.at(-1)?.role === 'tuteur' && !items.at(-1)?.text ? items.slice(0, -1) : items); if ((error as Error).name !== 'AbortError') notify(tr('tutorUnavailable'), error instanceof Error ? error.message : tr('retry'), 'info'); } finally { replyAbort.current = null; setWorking(false); }
+    } catch (error) { debugError('conversation.text.failed', error, { learningSessionId: activeLearning.id, skill: selected?.name }); setMessages((items) => items.at(-1)?.role === 'tuteur' && !items.at(-1)?.text ? items.slice(0, -1) : items); if ((error as Error).name !== 'AbortError') notify(tr('tutorUnavailable'), error instanceof Error ? error.message : tr('retry'), 'info'); } finally { replyAbort.current = null; setWorking(false); }
   }
-  function cancelReply() { replyAbort.current?.abort(); }
-  function leaveTextConversation() { if (textConversationCredits > 0) notify(tr('conversationEnded'), tr('creditsUsed', { amount: textConversationCredits.toLocaleString(dateLocale(locale), { maximumFractionDigits: 2 }), plural: plural(locale, textConversationCredits) })); setTextConversationCredits(0); setPage('home'); }
+  function cancelReply() { debugLog('conversation.text.cancelled', { learningSessionId: learningSession?.id }); replyAbort.current?.abort(); }
+  function leaveTextConversation() { debugLog('conversation.text.left', { learningSessionId: learningSession?.id, chargedCredits: textConversationCredits }); if (textConversationCredits > 0) notify(tr('conversationEnded'), tr('creditsUsed', { amount: textConversationCredits.toLocaleString(dateLocale(locale), { maximumFractionDigits: 2 }), plural: plural(locale, textConversationCredits) })); setTextConversationCredits(0); setPage('home'); }
 
   async function beginAssessment() {
     if (!selected) return notify('Choisissez une compétence', 'Sélectionnez d’abord la compétence à évaluer.', 'info');
     const activeLearning = await ensureLearningSession(); if (!activeLearning) return;
+    debugLog('assessment.start_requested', { learningSessionId: activeLearning.id, skill: selected.name });
     const serverSession = await startLearningEvaluation(activeLearning.id);
     setLearningSession(serverSession); setMessages(serverSession.messages.map((item) => ({ role: item.role, text: item.text })));
     const next = await setEvaluationProgress(selected.id, serverSession.evaluation);
@@ -181,17 +188,19 @@ export default function HomeScreen() {
   async function ensureLearningSession() {
     if (learningSession) return learningSession;
     if (!selected) { notify('Choisissez une compétence', 'Sélectionnez la compétence avant de démarrer le tuteur.', 'info'); return undefined; }
-    try { const created = await createLearningSession({ skill: selected.name, level: selected.level, tutor: tutor?.name || 'Koxmos' }); setLearningSession(created); setMessages(created.messages.map((item) => ({ role: item.role, text: item.text }))); return created; }
-    catch (error) { notify('Conversation indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); return undefined; }
+    try { const created = await createLearningSession({ skill: selected.name, level: selected.level, tutor: tutor?.name || 'Koxmos' }); debugLog('learning_session.created', { learningSessionId: created.id, skill: created.skill, level: created.level, tutor: created.tutor }); setLearningSession(created); setMessages(created.messages.map((item) => ({ role: item.role, text: item.text }))); return created; }
+    catch (error) { debugError('learning_session.create_failed', error, { skill: selected.name }); notify('Conversation indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); return undefined; }
   }
 
   function chooseTutor(nextTutor: Tutor) {
+    debugLog('tutor.selected', { tutor: nextTutor.key, country: profile?.country });
     setTutor(nextTutor);
     setLearningSession(undefined);
     setMessages([]);
   }
 
   function chooseSkill(skill: Skill) {
+    debugLog('skill.selected', { skillId: skill.id, skill: skill.name, level: skill.level });
     setSelected(skill);
     setLearningSession(undefined);
     setMessages([]);
@@ -342,27 +351,29 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
       try {
         const activeLearning = learningSession || await ensureLearningSession();
         if (!activeLearning) return;
+        debugLog('conversation.voice.start_requested', { learningSessionId: activeLearning.id, skill: skill?.name, tutor: tutor.key, resume: messages.length > 0 });
         const billing = await startVoiceSession(skill?.name || 'Compétence');
         billingId = billing.id;
         const realtime = await startRealtimeConversation({
           billingSessionId: billing.id, learningSessionId: activeLearning.id, country: tutor.countries[0], tutor: tutor.key,
           resume: messages.length > 0, level: skill?.level || 'Débutant', summary: compactConversation(messages) || activeLearning.summary || skill?.assessment?.evidence,
-          onRemoteStream: () => setState(`${tutor.name} parle`), onStatus: (status) => setState(`OpenAI : ${status}`), onAudioLevel: setLevels,
-          onLimit: () => { setState('Limite de session atteinte'); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); notifyRef.current('Session terminée', 'La limite de session est atteinte. Vous pouvez démarrer une nouvelle session.'); },
-          onTranscript: (turn) => { const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => { const last = previous.at(-1); if (last?.role !== event.role) return [...previous, { role: event.role, text: event.text }]; return [...previous.slice(0, -1), { ...last, text: mergeLiveTranscript(last.text, event.text) }]; }); },
+          onRemoteStream: () => { debugLog('conversation.voice.remote_audio', { billingSessionId: billing.id }); setState(`${tutor.name} parle`); }, onStatus: (status) => { debugLog('conversation.voice.status', { billingSessionId: billing.id, status }); setState(`OpenAI : ${status}`); }, onAudioLevel: setLevels,
+          onLimit: () => { debugLog('conversation.voice.limit_reached', { billingSessionId: billing.id }); setState('Limite de session atteinte'); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); notifyRef.current('Session terminée', 'La limite de session est atteinte. Vous pouvez démarrer une nouvelle session.'); },
+          onTranscript: (turn) => { if (turn.isFinal) debugLog('conversation.voice.transcript_final', { billingSessionId: billing.id, speaker: turn.speaker, chars: turn.text.length }); const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => { const last = previous.at(-1); if (last?.role !== event.role) return [...previous, { role: event.role, text: event.text }]; return [...previous.slice(0, -1), { ...last, text: mergeLiveTranscript(last.text, event.text) }]; }); },
         });
-        setCall(realtime); setSession({ id: billing.id, charged: 0 }); setState('Tuteur connecté');
-      } catch (error) { if (billingId) await endVoiceSession(billingId).catch(() => undefined); if (error instanceof AgentRequestError && error.status === 404) resetLearningSession(); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); }
+        debugLog('conversation.voice.connected', { billingSessionId: billing.id, learningSessionId: activeLearning.id }); setCall(realtime); setSession({ id: billing.id, charged: 0 }); setState('Tuteur connecté');
+      } catch (error) { debugError('conversation.voice.start_failed', error, { billingSessionId: billingId, learningSessionId: learningSession?.id }); if (billingId) await endVoiceSession(billingId).catch(() => undefined); if (error instanceof AgentRequestError && error.status === 404) resetLearningSession(); notify('Session vocale indisponible', error instanceof Error ? error.message : 'Réessayez dans un instant.', 'info'); }
       return;
     }
     const activeSession = session;
     try {
+      debugLog('conversation.voice.stop_requested', { billingSessionId: activeSession.id, silent });
       const closeResult = await call?.close().catch(() => undefined);
       if (closeResult?.proposal) await onProposal(closeResult.proposal);
       const result = await endVoiceSession(activeSession.id);
       if (result.durationSeconds >= 60) { const practice = await recordPractice(result.durationSeconds); onFlame(practice.flame); if (practice.rewarded) notify('Flamme gagnée', 'Une minute de pratique validée : +1 flamme.'); }
       if (!silent) { const consumedCredits = result.chargedFcfa / 100; setState(`Terminée : ${consumedCredits.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} crédits`); notify('Conversation terminée', `${consumedCredits.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} crédit${consumedCredits === 1 ? '' : 's'} consommé${consumedCredits === 1 ? '' : 's'}.`); }
-    } finally { setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); }
+    } finally { debugLog('conversation.voice.stopped', { billingSessionId: activeSession.id }); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); }
   }
   async function leaveVoice() { if (session) await toggle(); back(); }
   async function changeAgent() { if (textMode) { setTextMode(false); await toggle(true); return; } if (session) await toggle(true); setState('Mode texte'); setTextMode(true); }
