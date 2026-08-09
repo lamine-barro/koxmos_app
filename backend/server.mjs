@@ -89,7 +89,10 @@ function addLearningMessage(session, role, text, mode = 'text') { const value = 
 function conversationLog(sessionId, device, seed = {}) {
   state.conversationLogs ||= {};
   const existing = state.conversationLogs[sessionId];
-  if (existing?.device === device) return existing;
+  if (existing?.device === device) {
+    for (const [key, value] of Object.entries(seed)) if (value !== undefined && value !== null && value !== '') existing[key] = value;
+    return existing;
+  }
   const created = { id: sessionId, device, createdAt: now(), updatedAt: now(), status: 'active', skill: '', tutor: '', entries: [], ...seed };
   state.conversationLogs[sessionId] = created;
   return created;
@@ -521,8 +524,9 @@ app.post('/v1/sessions/:id/heartbeat', requireDevice, (request, response) => {
 });
 app.post('/v1/sessions/:id/end', requireDevice, (request, response) => {
   const session = state.sessions[request.params.id]; if (!session || session.device !== request.deviceId) return response.status(404).json({ error: 'Session introuvable.' });
-  if (realtimeSessions.has(session.id)) closeRealtimeSession(session.id);
+  const hadRealtimeLink = realtimeSessions.has(session.id); if (hadRealtimeLink) closeRealtimeSession(session.id);
   settle(session); if (session.status === 'active') { session.status = 'ended'; session.endedAt = now(); }
+  const transcript = state.conversationLogs?.[session.id]; if (transcript?.device === request.deviceId) { transcript.status = session.status; if (!hadRealtimeLink) appendConversationLog(session.id, request.deviceId, 'session.closed', { status: session.status, chargedMilliXof: session.chargedMilliXof, reason: 'billing_end' }); }
   const durationSeconds = Math.floor(Math.max(0, new Date(session.endedAt || now()).getTime() - new Date(session.startedAt).getTime()) / 1000); persist(); audit('billing.voice_session.ended', { traceId: request.traceId, billingSessionId: session.id, status: session.status, durationSeconds, chargedMilliXof: session.chargedMilliXof }); response.json({ status: session.status, chargedFcfa: session.chargedMilliXof / 1000, durationSeconds, wallet: publicWallet(request.deviceId) });
 });
 
