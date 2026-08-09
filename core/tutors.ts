@@ -13,11 +13,9 @@ export type Tutor = {
 
 // Public tutor identities. The server maps each identity to a fixed OpenAI voice.
 export const TUTORS: Tutor[] = [
-  { key: 'ADJOUA', name: 'Amina', gender: 'female', countries: ['CI', 'SN', 'CM', 'CG', 'FR', 'MA', 'TN', 'AE'], languages: ['fr', 'en'], persona: 'Chaleureuse, structurée et encourageante.', avatar: require('../assets/voices/adjoua.png') },
-  { key: 'KOUADIO', name: 'Nabil', gender: 'male', countries: ['CI', 'SN', 'CM', 'CG', 'FR', 'MA', 'TN', 'AE'], languages: ['fr', 'en'], persona: 'Direct, pragmatique et orienté résultat.', avatar: require('../assets/voices/kouadio.png') },
-  { key: 'NANA', name: 'Imara', gender: 'female', countries: ['GH', 'NG', 'KE'], languages: ['en', 'fr'], persona: 'Posée, précise et tournée vers la progression.', avatar: require('../assets/voices/nana.png') },
-  { key: 'KAMAU', name: 'Kato', gender: 'male', countries: ['KE', 'GH', 'NG'], languages: ['en', 'sw'], persona: 'Calme, analytique et concret.', avatar: require('../assets/voices/kamau.png') },
-  { key: 'KEMI', name: 'Sade', gender: 'female', countries: ['NG', 'GH'], languages: ['en', 'fr'], persona: 'Énergique, bienveillante et exigeante.', avatar: require('../assets/voices/kemi.png') },
+  { key: 'AWA', name: 'Awa', gender: 'female', countries: ['CI', 'CM', 'CG', 'FR', 'MA', 'TN', 'SN', 'AE', 'EG', 'GH', 'KE', 'NG', 'US'], languages: ['fr', 'en'], persona: 'Chaleureuse et structurée : elle clarifie, rassure et transforme chaque réponse en plan d’action.', avatar: require('../assets/voices/adjoua.png') },
+  { key: 'LYNA', name: 'Lyna', gender: 'female', countries: ['CI', 'CM', 'CG', 'FR', 'MA', 'TN', 'SN', 'AE', 'EG', 'GH', 'KE', 'NG', 'US'], languages: ['fr', 'en'], persona: 'Énergique et créative : elle fait pratiquer, valorise les progrès et développe la confiance.', avatar: require('../assets/voices/nana.png') },
+  { key: 'MALIK', name: 'Malik', gender: 'male', countries: ['CI', 'CM', 'CG', 'FR', 'MA', 'TN', 'SN', 'AE', 'EG', 'GH', 'KE', 'NG', 'US'], languages: ['fr', 'en'], persona: 'Calme et exigeant : il raisonne avec précision, challenge avec respect et vise l’autonomie.', avatar: require('../assets/voices/kouadio.png') },
 ];
 
 function balancedPair<T extends { gender: 'female' | 'male' }>(items: T[]): T[] {
@@ -30,6 +28,5 @@ export function tutorForKey(key?: string) { return TUTORS.find((tutor) => tutor.
 export function tutorsForCountry(country: string) {
   const code = country.trim().toUpperCase();
   const regional = TUTORS.filter((tutor) => tutor.countries.includes(code));
-  const available = regional.length ? regional : TUTORS.filter((tutor) => tutor.key === 'ADJOUA' || tutor.key === 'KOUADIO');
-  return balancedPair(available);
+  return regional.length ? regional : TUTORS;
 }
