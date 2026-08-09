@@ -319,7 +319,7 @@ const realtimeTools = [
 function realtimeVoice(tutorKey) { return ({ AWA: 'marin', LYNA: 'verse', MALIK: 'cedar' })[tutorKey] || 'marin'; }
 function realtimeInstructions({ country, tutor, learning, level, summary }) {
   const startsInEnglish = ['AE', 'EG', 'GH', 'KE', 'NG', 'US'].includes(country);
-  return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response short, concrete, kind, and focused on one next action.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nAt the beginning, call get_talent_skill_context. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per answer and call propose_passport_update only after exactly five consecutive successes.`;
+  return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response short, concrete, kind, and focused on one next action.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nWhen the call opens, immediately greet the learner, name the skill, and ask exactly this choice in the learner’s language: whether they want to work on a specific objective or start the five-question evaluation. Then wait for their answer. At the beginning, call get_talent_skill_context. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per answer and call propose_passport_update only after exactly five consecutive successes.`;
 }
 
 function realtimeToolOutput(link, name, args, callId) {
@@ -367,7 +367,7 @@ function attachRealtimeSideband(link, callId) {
   return new Promise((resolveSideband, rejectSideband) => {
     const sideband = new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
     const timeout = setTimeout(() => { sideband.close(); rejectSideband(new Error('Délai du canal de contrôle OpenAI.')); }, 8_000);
-    sideband.once('open', () => { clearTimeout(timeout); link.sideband = sideband; audit('realtime.sideband.connected', { billingSessionId: link.billingSessionId, callId }); resolveSideband(); });
+    sideband.once('open', () => { clearTimeout(timeout); link.sideband = sideband; sideband.send(JSON.stringify({ type: 'response.create' })); audit('realtime.sideband.connected', { billingSessionId: link.billingSessionId, callId, openingResponseRequested: true }); resolveSideband(); });
     sideband.once('error', (error) => { clearTimeout(timeout); auditError('realtime.sideband.error', error, { billingSessionId: link.billingSessionId, callId }); rejectSideband(error); });
     sideband.on('message', (message) => {
       let event; try { event = JSON.parse(message.toString()); } catch { return; }
