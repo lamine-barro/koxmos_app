@@ -397,7 +397,16 @@ function attachRealtimeSideband(link, callId) {
   return new Promise((resolveSideband, rejectSideband) => {
     const sideband = new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
     const timeout = setTimeout(() => { sideband.close(); rejectSideband(new Error('Délai du canal de contrôle OpenAI.')); }, 8_000);
-    sideband.once('open', () => { clearTimeout(timeout); link.sideband = sideband; sideband.send(JSON.stringify({ type: 'response.create' })); audit('realtime.sideband.connected', { billingSessionId: link.billingSessionId, callId, openingResponseRequested: true }); resolveSideband(); });
+    sideband.once('open', () => {
+      clearTimeout(timeout); link.sideband = sideband;
+      // VAD only creates replies after it hears the learner. Create a server
+      // event for the call opening, then explicitly request the first audio
+      // response so every confirmed call begins with the tutor speaking.
+      sideband.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '[Koxmos system event: the learner has just joined the call. Start your short spoken welcome now, name the selected skill, and ask whether they want practice or the evaluation.]' }] } }));
+      sideband.send(JSON.stringify({ type: 'response.create', response: { output_modalities: ['audio'], max_output_tokens: 180 } }));
+      appendConversationLog(link.billingSessionId, link.device, 'opening.response_requested', { callId }); persist();
+      audit('realtime.sideband.connected', { billingSessionId: link.billingSessionId, callId, openingResponseRequested: true }); resolveSideband();
+    });
     sideband.once('error', (error) => { clearTimeout(timeout); auditError('realtime.sideband.error', error, { billingSessionId: link.billingSessionId, callId }); rejectSideband(error); });
     sideband.on('message', (message) => {
       let event; try { event = JSON.parse(message.toString()); } catch { return; }
