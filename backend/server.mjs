@@ -359,7 +359,7 @@ function shouldRespondToTranscript(text) {
 function requestRealtimeResponse(link, sideband, reason) {
   if (link.responsePending || sideband.readyState !== WebSocket.OPEN) return false;
   link.responsePending = true; link.lastResponseRequestedAt = Date.now();
-  sideband.send(JSON.stringify({ type: 'response.create', response: { output_modalities: ['audio'], max_output_tokens: 420 } }));
+  sideband.send(JSON.stringify({ type: 'response.create', response: { output_modalities: ['audio'], max_output_tokens: 1000 } }));
   appendConversationLog(link.billingSessionId, link.device, 'response.requested', { reason }); persist();
   return true;
 }
@@ -462,7 +462,7 @@ app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   const locale = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : 'CI';
   const tutorKey = typeof tutor === 'string' ? tutor.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : '';
   const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), responsePending: false, lastResponseRequestedAt: 0, sideband: null };
-  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 420, reasoning: { effort: 'minimal' }, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: false, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
+  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 1000, reasoning: { effort: 'minimal' }, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: false, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
   audit('realtime.connect_requested', { traceId: request.traceId, billingSessionId, learningSessionId: learning?.id, device: deviceFingerprint(request.deviceId), tutor: tutorKey, locale, resume: Boolean(resume), skill: link.skill, level: link.level, summaryChars: link.summary.length });
   try {
     const form = new FormData(); form.set('sdp', sdp); form.set('session', JSON.stringify(session));
