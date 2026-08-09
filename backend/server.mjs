@@ -48,6 +48,9 @@ const learningContextChars = Math.min(1_600, Math.max(600, Number(process.env.KO
 // Enable only while investigating a specific incident. Conversation text can
 // contain personal data, so normal production logs stay metadata-only.
 const debugConversationContent = process.env.KOXMOS_DEBUG_CONVERSATION_CONTENT === 'true';
+const transcriptRetentionMs = Number(process.env.KOXMOS_TRANSCRIPT_RETENTION_DAYS || 30) * 86_400_000;
+const maxTranscriptSessions = Math.min(1_000, Math.max(20, Number(process.env.KOXMOS_MAX_TRANSCRIPT_SESSIONS || 250)));
+const maxTranscriptEvents = 240;
 const stateFile = resolve(import.meta.dirname, process.env.KOXMOS_STATE_FILE || './data/billing-state.json');
 const requests = new Map();
 const realtimeSessions = new Map();
@@ -75,7 +78,7 @@ if (isProduction && paymentEnabled) throw new Error('Les paiements ne peuvent pa
 
 function loadState() {
   try { return JSON.parse(readFileSync(stateFile, 'utf8')); }
-  catch { return { wallets: {}, sessions: {}, ledger: [], rechargeOrders: {}, flames: {} }; }
+  catch { return { wallets: {}, sessions: {}, ledger: [], rechargeOrders: {}, flames: {}, conversationLogs: {} }; }
 }
 let state = loadState();
 function publicLearningSession(session) { return { id: session.id, skill: session.skill, level: session.level, tutor: session.tutor, summary: session.summary, evaluation: session.evaluation, messages: session.messages.slice(-learningContextTurns), updatedAt: session.updatedAt }; }
@@ -83,12 +86,32 @@ function learningSession(id, device) { purgeEphemeralLearningSessions(); const s
 function updateLearningSummary(session) { session.summary = session.messages.slice(-learningContextTurns).map((item) => `${item.role === 'talent' ? 'Talent' : 'Tuteur'}: ${item.text}`).join('\n').slice(-learningContextChars); session.updatedAt = now(); }
 function mergeLiveTranscript(current, incoming) { const next = incoming.trim(); if (!current) return next; const previous = current.trim(); const currentLower = previous.toLowerCase(); const nextLower = next.toLowerCase(); if (currentLower === nextLower || currentLower.includes(nextLower)) return previous; if (nextLower.includes(currentLower)) return next; const currentWords = currentLower.match(/[\p{L}\p{N}']+/gu) || []; const nextWords = nextLower.match(/[\p{L}\p{N}']+/gu) || []; const shared = currentWords.filter((word) => nextWords.includes(word)).length; if (next.length >= previous.length && currentWords.length > 2 && shared / currentWords.length >= .7) return next; for (let length = Math.min(previous.length, next.length); length >= 4; length -= 1) if (currentLower.endsWith(nextLower.slice(0, length))) return `${previous}${next.slice(length)}`; return `${previous} ${next}`; }
 function addLearningMessage(session, role, text, mode = 'text') { const value = String(text || '').trim().slice(0, 4000); if (!value) return; const previous = session.messages.at(-1); if (previous?.role === role && previous.text === value) return; if (mode === 'voice' && previous?.mode === 'voice' && previous.role === role) { previous.text = mergeLiveTranscript(previous.text, value).slice(0, 4000); previous.createdAt = now(); updateLearningSummary(session); audit('conversation.turn_merged', { learningSessionId: session.id, role, mode, ...conversationAuditFields(value) }); return; } session.messages.push({ id: crypto.randomUUID(), role, text: value, mode, createdAt: now() }); session.messages = session.messages.slice(-learningContextTurns); updateLearningSummary(session); audit('conversation.turn_saved', { learningSessionId: session.id, role, mode, turns: session.messages.length, ...conversationAuditFields(value) }); }
+function conversationLog(sessionId, device, seed = {}) {
+  state.conversationLogs ||= {};
+  const existing = state.conversationLogs[sessionId];
+  if (existing?.device === device) return existing;
+  const created = { id: sessionId, device, createdAt: now(), updatedAt: now(), status: 'active', skill: '', tutor: '', entries: [], ...seed };
+  state.conversationLogs[sessionId] = created;
+  return created;
+}
+function appendConversationLog(sessionId, device, type, payload = {}) {
+  const item = conversationLog(sessionId, device);
+  item.entries.push({ id: crypto.randomUUID(), at: now(), type, ...payload });
+  item.entries = item.entries.slice(-maxTranscriptEvents); item.updatedAt = now();
+  return item;
+}
+function publicConversationLog(item) { return { id: item.id, createdAt: item.createdAt, updatedAt: item.updatedAt, status: item.status, skill: item.skill, tutor: item.tutor, entries: item.entries }; }
 function purgeExpiredState() {
   const cutoffSessions = Date.now() - sessionRetentionMs;
   const cutoffLedger = Date.now() - ledgerRetentionMs;
   for (const [id, session] of Object.entries(state.sessions)) if (session.status !== 'active' && new Date(session.endedAt || session.updatedAt).getTime() < cutoffSessions) delete state.sessions[id];
   purgeEphemeralLearningSessions();
   state.ledger = state.ledger.filter((entry) => new Date(entry.createdAt).getTime() >= cutoffLedger).slice(-10_000);
+  state.conversationLogs ||= {};
+  const cutoffTranscripts = Date.now() - transcriptRetentionMs;
+  for (const [id, item] of Object.entries(state.conversationLogs)) if (new Date(item.updatedAt || item.createdAt).getTime() < cutoffTranscripts) delete state.conversationLogs[id];
+  const overflow = Object.values(state.conversationLogs).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(maxTranscriptSessions);
+  for (const item of overflow) delete state.conversationLogs[item.id];
 }
 function purgeEphemeralLearningSessions() {
   const cutoff = Date.now() - learningRetentionMs;
@@ -191,6 +214,7 @@ function closeRealtimeSession(sessionId, status = 'ended', expectedDevice) {
     billing.endedAt = now(); billing.providerSessionId = undefined; billing.updatedAt = now(); persist();
   }
   const result = { proposal: link?.proposal, evaluation: link?.learningSessionId ? learningSession(link.learningSessionId, link.device)?.evaluation : undefined };
+  const transcript = state.conversationLogs?.[sessionId]; if (transcript?.device === owner) { transcript.status = status; appendConversationLog(sessionId, owner, 'session.closed', { status, chargedMilliXof: billing?.chargedMilliXof || 0, proposal: result.proposal, evaluation: result.evaluation }); persist(); }
   audit('realtime.closed', { billingSessionId: sessionId, status, device: deviceFingerprint(owner), learningSessionId: link?.learningSessionId, proposal: result.proposal?.level, evaluation: result.evaluation });
   return result;
 }
@@ -218,6 +242,7 @@ app.use((request, response, next) => {
 });
 app.use(rateLimit);
 app.get('/health', (_request, response) => response.json({ ok: true, storage: 'development-file', usageGuardEnabled, paymentEnabled, voiceProviderConfigured: Boolean(apiKey), realtimeModel, paymentProviderConfigured: paymentEnabled && Boolean(process.env.JEKO_STORE_ID && process.env.JEKO_API_KEY && process.env.JEKO_API_KEY_ID) }));
+app.get('/v1/debug/conversations', requireDevice, (request, response) => { const limit = Math.min(30, Math.max(1, Number(request.query.limit || 10))); const records = Object.values(state.conversationLogs || {}).filter((item) => item.device === request.deviceId).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, limit).map(publicConversationLog); response.json({ retentionDays: transcriptRetentionMs / 86_400_000, conversations: records }); });
 app.delete('/v1/account', requireDevice, (request, response) => {
   const device = request.deviceId;
   delete state.wallets[device]; delete state.flames?.[device];
@@ -321,7 +346,7 @@ function realtimeVoice(tutorKey) { return ({ AWA: 'marin', LYNA: 'verse', MALIK:
 function realtimeTutorName(tutorKey) { return ({ AWA: 'Awa', LYNA: 'Lyna', MALIK: 'Malik' })[tutorKey] || 'votre tuteur Koxmos'; }
 function realtimeInstructions({ country, tutor, learning, level, summary }) {
   const startsInEnglish = ['AE', 'EG', 'GH', 'KE', 'NG', 'US'].includes(country);
-  return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response short, concrete, kind, and focused on one next action.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nWhen the call opens, immediately greet the learner, name the skill, and ask exactly this choice in the learner’s language: whether they want to work on a specific objective or start the five-question evaluation. Then wait for their answer. At the beginning, call get_talent_skill_context. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per answer and call propose_passport_update only after exactly five consecutive successes.`;
+  return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response under 45 words, concrete, kind, and focused on one next action. Never respond to silence, background noise, fillers, or a simple acknowledgement; wait for a clear learner request or answer.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nWhen the call opens, immediately give one short greeting, name the skill, and ask exactly this choice in the learner’s language: whether they want to work on a specific objective or start the five-question evaluation. Then wait silently for their answer. The supplied context already contains the skill state: do not call get_talent_skill_context at the opening. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per clear answer and call propose_passport_update only after exactly five consecutive successes.`;
 }
 
 function realtimeToolOutput(link, name, args, callId) {
@@ -343,6 +368,7 @@ function realtimeToolOutput(link, name, args, callId) {
     output = { skill: link.skill, current_level: link.level, latest_summary: learning?.summary || link.summary || 'Aucune évaluation enregistrée.', evaluation: learning?.evaluation, rule: 'Une progression requiert cinq réussites consécutives, vérifiées par Koxmos.' };
   } else output = { accepted: false, error: 'Outil non autorisé.' };
   link.toolOutputs.set(callId, output);
+  appendConversationLog(link.billingSessionId, link.device, 'tool.called', { callId, name, arguments: args, output }); persist();
   audit('realtime.tool.executed', { billingSessionId: link.billingSessionId, learningSessionId: link.learningSessionId, callId, name, accepted: output.accepted ?? output.accepted_for_auto_update, evaluation: output.evaluation, proposal: link.proposal?.level });
   return output;
 }
@@ -353,6 +379,7 @@ function addRealtimeUsage(link, responseEvent) {
   if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return;
   link.usageResponses.add(responseId);
   addLedger(link.device, 'usage', 0, 'openai_realtime', { model: realtimeModel, sessionId: link.billingSessionId, responseId, inputTokens: input, outputTokens: output, inputTokenDetails: usage.input_token_details || undefined, outputTokenDetails: usage.output_token_details || undefined, source: 'openai_sideband' }); persist();
+  appendConversationLog(link.billingSessionId, link.device, 'usage.recorded', { responseId, model: realtimeModel, inputTokens: input, outputTokens: output, inputAudioTokens: Number(usage.input_token_details?.audio_tokens || 0), outputAudioTokens: Number(usage.output_token_details?.audio_tokens || 0) }); persist();
   audit('realtime.usage', { billingSessionId: link.billingSessionId, responseId, inputTokens: input, outputTokens: output, model: realtimeModel });
 }
 function storeRealtimeTranscript(link, event) {
@@ -363,6 +390,7 @@ function storeRealtimeTranscript(link, event) {
   link.transcriptItems.add(itemId);
   const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
   if (learning) addLearningMessage(learning, role, text, 'voice');
+  appendConversationLog(link.billingSessionId, link.device, 'transcript.final', { role, itemId, text: text.slice(0, 4000) }); persist();
   audit('realtime.transcript.final', { billingSessionId: link.billingSessionId, learningSessionId: link.learningSessionId, role, itemId, ...conversationAuditFields(text) });
 }
 function attachRealtimeSideband(link, callId) {
@@ -402,14 +430,14 @@ app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   const locale = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : 'CI';
   const tutorKey = typeof tutor === 'string' ? tutor.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : '';
   const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), sideband: null };
-  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 420, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
+  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 180, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor: realtimeTutorName(tutorKey), learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
   audit('realtime.connect_requested', { traceId: request.traceId, billingSessionId, learningSessionId: learning?.id, device: deviceFingerprint(request.deviceId), tutor: tutorKey, locale, resume: Boolean(resume), skill: link.skill, level: link.level, summaryChars: link.summary.length });
   try {
     const form = new FormData(); form.set('sdp', sdp); form.set('session', JSON.stringify(session));
     const provider = await fetch('https://api.openai.com/v1/realtime/calls', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': crypto.createHash('sha256').update(request.deviceId).digest('hex') }, body: form });
     const answerSdp = await provider.text(); const location = provider.headers.get('location'); const callId = location?.split('/').pop();
     if (!provider.ok || !callId || !answerSdp) { audit('realtime.connect_rejected', { traceId: request.traceId, billingSessionId, providerStatus: provider.status, body: answerSdp.slice(0, 300) }); return response.status(502).json({ error: 'OpenAI Realtime refuse temporairement la session.' }); }
-    realtimeSessions.set(billingSessionId, link); billing.learningSessionId = learning?.id; billing.providerSessionId = callId; billing.providerSessionStartedAt = now(); billing.updatedAt = now(); persist();
+    realtimeSessions.set(billingSessionId, link); billing.learningSessionId = learning?.id; billing.providerSessionId = callId; billing.providerSessionStartedAt = now(); billing.updatedAt = now(); const transcript = conversationLog(billingSessionId, request.deviceId, { skill: link.skill, tutor: realtimeTutorName(tutorKey), learningSessionId: learning?.id, model: realtimeModel }); appendConversationLog(billingSessionId, request.deviceId, 'session.connected', { callId, locale, maxOutputTokens: session.max_output_tokens }); persist();
     try { await attachRealtimeSideband(link, callId); } catch (error) { closeRealtimeSession(billingSessionId, 'ended_provider_error'); console.error('OpenAI Realtime sideband failed', error instanceof Error ? error.message : String(error)); return response.status(502).json({ error: 'Canal de contrôle OpenAI indisponible.' }); }
     realtimeTimers.set(billingSessionId, setTimeout(() => closeRealtimeSession(billingSessionId, 'ended_timeout'), maxSessionMs));
     audit('realtime.connected', { traceId: request.traceId, billingSessionId, callId, learningSessionId: learning?.id, model: realtimeModel, maxDurationSeconds: Math.floor(maxSessionMs / 1000) });
@@ -456,7 +484,7 @@ app.post('/v1/sessions', requireDevice, (request, response) => {
   const { skill } = request.body ?? {}; if (typeof skill !== 'string' || !skill.trim()) return response.status(400).json({ error: 'Sélectionnez une compétence.' });
   if (usageGuardEnabled) { const account = wallet(request.deviceId); if (account.balanceMilliXof < minimumStartBalanceMilliXof) return response.status(402).json({ error: 'Votre temps disponible est épuisé. Rechargez votre portefeuille pour démarrer un appel.' }); }
   const session = { id: crypto.randomUUID(), device: request.deviceId, skill: skill.trim().slice(0, 80), startedAt: now(), updatedAt: now(), chargedMilliXof: 0, status: 'active' };
-  state.sessions[session.id] = session; persist(); audit('billing.voice_session.started', { traceId: request.traceId, billingSessionId: session.id, device: deviceFingerprint(request.deviceId), skill: session.skill, usageGuardEnabled }); response.status(201).json({ session: { id: session.id, startedAt: session.startedAt, pricePerMinuteFcfa: usageGuardEnabled ? 100 : 0 }, voice: { configured: Boolean(apiKey), provider: 'openai-realtime', model: realtimeModel } });
+  state.sessions[session.id] = session; conversationLog(session.id, request.deviceId, { skill: session.skill }); appendConversationLog(session.id, request.deviceId, 'session.created', { pricePerMinuteFcfa: usageGuardEnabled ? 100 : 0 }); persist(); audit('billing.voice_session.started', { traceId: request.traceId, billingSessionId: session.id, device: deviceFingerprint(request.deviceId), skill: session.skill, usageGuardEnabled }); response.status(201).json({ session: { id: session.id, startedAt: session.startedAt, pricePerMinuteFcfa: usageGuardEnabled ? 100 : 0 }, voice: { configured: Boolean(apiKey), provider: 'openai-realtime', model: realtimeModel } });
 });
 app.post('/v1/sessions/:id/heartbeat', requireDevice, (request, response) => {
   const session = state.sessions[request.params.id]; if (!session || session.device !== request.deviceId) return response.status(404).json({ error: 'Session introuvable.' });
