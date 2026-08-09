@@ -12,6 +12,7 @@
   "dependencies": {
     "@openai/agents": "^0.14.3",
     "express": "^5.1.0",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   }
 }

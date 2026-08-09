@@ -348,6 +348,7 @@ function Voice({ skill, tutor, learningSession, ensureLearningSession, resetLear
           billingSessionId: billing.id, learningSessionId: activeLearning.id, country: tutor.countries[0], tutor: tutor.key,
           resume: messages.length > 0, level: skill?.level || 'Débutant', summary: compactConversation(messages) || activeLearning.summary || skill?.assessment?.evidence,
           onRemoteStream: () => setState(`${tutor.name} parle`), onStatus: (status) => setState(`OpenAI : ${status}`), onAudioLevel: setLevels,
+          onLimit: () => { setState('Limite de session atteinte'); setSession(null); setCall(null); setLevels({ talent: 0, agent: 0 }); notifyRef.current('Session terminée', 'La limite de session est atteinte. Vous pouvez démarrer une nouvelle session.'); },
           onTranscript: (turn) => { const event = { role: turn.speaker === 'agent' ? 'tuteur' as const : 'talent' as const, text: turn.text, mode: 'voice' as const }; setMessages((previous) => { const last = previous.at(-1); if (last?.role !== event.role) return [...previous, { role: event.role, text: event.text }]; return [...previous.slice(0, -1), { ...last, text: mergeLiveTranscript(last.text, event.text) }]; }); },
         });
         setCall(realtime); setSession({ id: billing.id, charged: 0 }); setState('Tuteur connecté');

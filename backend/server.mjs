@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import express from 'express';
 import { Agent, run, tool } from '@openai/agents';
+import WebSocket from 'ws';
 import { z } from 'zod';
 
 function loadEnvFile(file) {
@@ -167,6 +168,7 @@ function closeRealtimeSession(sessionId, status = 'ended') {
   const link = realtimeSessions.get(sessionId);
   const timer = realtimeTimers.get(sessionId); if (timer) clearTimeout(timer);
   realtimeTimers.delete(sessionId); realtimeSessions.delete(sessionId);
+  if (link?.sideband?.readyState === WebSocket.OPEN || link?.sideband?.readyState === WebSocket.CONNECTING) link.sideband.close();
   const billing = state.sessions[sessionId];
   if (billing?.device === link?.device && billing.status === 'active') {
     settle(billing);
@@ -295,9 +297,71 @@ function realtimeInstructions({ country, tutor, learning, level, summary }) {
   return `You are ${tutor || 'the Koxmos voice tutor'}, fully fluent in French and English. Start in ${startsInEnglish ? 'English' : 'French'}, then reply in the learner’s language. Switch language immediately when the learner switches or asks; do not mix languages in one reply unless translating. Keep every response short, concrete, kind, and focused on one next action.\nCompétence / skill: ${learning?.skill || 'non précisée'}; niveau / level: ${learning?.level || level || 'Débutant'}.\nContexte récent / recent context: ${(learning?.summary || summary || 'Aucun').slice(-learningContextChars)}\nAt the beginning, call get_talent_skill_context. Never claim to modify the passport. For an active assessment, call record_assessment_answer once per answer and call propose_passport_update only after exactly five consecutive successes.`;
 }
 
-app.post('/v1/realtime/token', requireDevice, async (request, response) => {
+function realtimeToolOutput(link, name, args, callId) {
+  if (link.toolOutputs.has(callId)) return link.toolOutputs.get(callId);
+  const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
+  let output;
+  if (name === 'record_assessment_answer') {
+    if (!learning?.evaluation?.active || typeof args.success !== 'boolean' || typeof args.explanation !== 'string') output = { accepted: false, error: 'Réponse d’évaluation invalide.' };
+    else {
+      const questionCount = Math.min(5, learning.evaluation.questionCount + 1); const consecutiveSuccesses = args.success ? learning.evaluation.consecutiveSuccesses + 1 : 0; const completed = questionCount === 5;
+      learning.evaluation = { active: !completed, questionCount, consecutiveSuccesses, completed, passed: completed && consecutiveSuccesses === 5, feedback: args.explanation.slice(0, 600), updatedAt: now() };
+      updateLearningSummary(learning); output = { accepted: true, evaluation: learning.evaluation, message: 'Réponse vocale enregistrée.' };
+    }
+  } else if (name === 'propose_passport_update') {
+    const proposal = { level: args.level, confidence: Number(args.confidence), evidence: String(args.evidence || '').slice(0, 800), nextExercise: String(args.next_exercise || '').slice(0, 400) };
+    if (!validProposal(proposal, link.level, learning?.evaluation)) output = { accepted_for_auto_update: false, error: 'Proposition pédagogique insuffisante ou saut de niveau interdit.' };
+    else { link.proposal = proposal; output = { accepted_for_auto_update: true, message: 'Proposition validée pour la mise à jour locale du passeport.' }; }
+  } else if (name === 'get_talent_skill_context') {
+    output = { skill: link.skill, current_level: link.level, latest_summary: learning?.summary || link.summary || 'Aucune évaluation enregistrée.', evaluation: learning?.evaluation, rule: 'Une progression requiert cinq réussites consécutives, vérifiées par Koxmos.' };
+  } else output = { accepted: false, error: 'Outil non autorisé.' };
+  link.toolOutputs.set(callId, output); return output;
+}
+function addRealtimeUsage(link, responseEvent) {
+  const usage = responseEvent?.usage; const responseId = typeof responseEvent?.id === 'string' ? responseEvent.id : null;
+  if (!usage || !responseId || link.usageResponses.has(responseId)) return;
+  const input = Number(usage.input_tokens || 0); const output = Number(usage.output_tokens || 0);
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return;
+  link.usageResponses.add(responseId);
+  addLedger(link.device, 'usage', 0, 'openai_realtime', { model: realtimeModel, sessionId: link.billingSessionId, responseId, inputTokens: input, outputTokens: output, inputTokenDetails: usage.input_token_details || undefined, outputTokenDetails: usage.output_token_details || undefined, source: 'openai_sideband' }); persist();
+}
+function storeRealtimeTranscript(link, event) {
+  const text = String(event.transcript || '').trim(); const itemId = typeof event.item_id === 'string' ? event.item_id : '';
+  if (!text || !itemId || link.transcriptItems.has(itemId)) return;
+  const role = event.type === 'conversation.item.input_audio_transcription.completed' ? 'talent' : event.type === 'response.output_audio_transcript.done' ? 'tuteur' : null;
+  if (!role) return;
+  link.transcriptItems.add(itemId);
+  const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
+  if (learning) addLearningMessage(learning, role, text, 'voice');
+}
+function attachRealtimeSideband(link, callId) {
+  return new Promise((resolveSideband, rejectSideband) => {
+    const sideband = new WebSocket(`wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const timeout = setTimeout(() => { sideband.close(); rejectSideband(new Error('Délai du canal de contrôle OpenAI.')); }, 8_000);
+    sideband.once('open', () => { clearTimeout(timeout); link.sideband = sideband; resolveSideband(); });
+    sideband.once('error', (error) => { clearTimeout(timeout); rejectSideband(error); });
+    sideband.on('message', (message) => {
+      let event; try { event = JSON.parse(message.toString()); } catch { return; }
+      storeRealtimeTranscript(link, event);
+      if (event.type === 'response.done') addRealtimeUsage(link, event.response);
+      if (event.type !== 'response.function_call_arguments.done') return;
+      const callId = typeof event.call_id === 'string' ? event.call_id : '';
+      const name = typeof event.name === 'string' ? event.name : '';
+      if (!callId || !name) return;
+      let args = {}; try { args = JSON.parse(typeof event.arguments === 'string' ? event.arguments : '{}'); } catch { /* invalid arguments are rejected below */ }
+      const output = realtimeToolOutput(link, name, args, callId);
+      if (sideband.readyState === WebSocket.OPEN) {
+        sideband.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output) } }));
+        sideband.send(JSON.stringify({ type: 'response.create' }));
+      }
+    });
+  });
+}
+
+app.post('/v1/realtime/connect', requireDevice, async (request, response) => {
   if (!apiKey) return response.status(503).json({ error: 'OpenAI Realtime n’est pas configuré.' });
-  const { billingSessionId, learningSessionId, country, level, summary, tutor, resume } = request.body ?? {};
+  const { billingSessionId, learningSessionId, country, level, summary, tutor, resume, sdp } = request.body ?? {};
+  if (typeof sdp !== 'string' || sdp.length < 50 || sdp.length > 12_000) return response.status(400).json({ error: 'Offre WebRTC invalide.' });
   const billing = typeof billingSessionId === 'string' ? state.sessions[billingSessionId] : null;
   if (!billing || billing.device !== request.deviceId || billing.status !== 'active') return response.status(400).json({ error: 'Session vocale non autorisée.' });
   const learning = typeof learningSessionId === 'string' ? learningSession(learningSessionId, request.deviceId) : null;
@@ -306,44 +370,20 @@ app.post('/v1/realtime/token', requireDevice, async (request, response) => {
   if (lastStart && Date.now() - lastStart < providerStartCooldownMs && !resume) return response.status(429).json({ error: 'Patientez quelques secondes avant de relancer un tuteur vocal.' });
   const locale = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : 'CI';
   const tutorKey = typeof tutor === 'string' ? tutor.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') : '';
-  const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null };
-  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor, learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
+  const link = { billingSessionId, device: request.deviceId, learningSessionId: learning?.id, skill: learning?.skill || billing.skill, level: learning?.level || (typeof level === 'string' ? level.slice(0, 30) : 'Débutant'), summary: learning?.summary || (typeof summary === 'string' ? summary.slice(-learningContextChars) : ''), proposal: null, toolOutputs: new Map(), transcriptItems: new Set(), usageResponses: new Set(), sideband: null };
+  const session = { type: 'realtime', model: realtimeModel, output_modalities: ['audio'], max_output_tokens: 420, truncation: { type: 'retention_ratio', retention_ratio: 0.8, token_limits: { post_instructions: 8_000 } }, audio: { input: { turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: true, interrupt_response: true }, transcription: { model: 'gpt-4o-mini-transcribe', language: locale === 'CI' || locale === 'SN' || locale === 'CM' || locale === 'CG' || locale === 'FR' || locale === 'MA' || locale === 'TN' ? 'fr' : 'en' } }, output: { voice: realtimeVoice(tutorKey) } }, instructions: realtimeInstructions({ country: locale, tutor, learning, level, summary }), tools: realtimeTools, tool_choice: 'auto' };
   try {
-    const provider = await fetch('https://api.openai.com/v1/realtime/client_secrets', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Safety-Identifier': crypto.createHash('sha256').update(request.deviceId).digest('hex') }, body: JSON.stringify({ session }) });
-    const data = await provider.json();
-    if (!provider.ok || typeof data?.value !== 'string') { console.error('OpenAI Realtime token failed', { status: provider.status, error: data?.error?.message }); return response.status(502).json({ error: 'OpenAI Realtime refuse temporairement la session.' }); }
-    realtimeSessions.set(billingSessionId, link); billing.learningSessionId = learning?.id; billing.providerSessionId = `openai:${billingSessionId}`; billing.providerSessionStartedAt = now(); billing.updatedAt = now(); persist();
+    const form = new FormData(); form.set('sdp', sdp); form.set('session', JSON.stringify(session));
+    const provider = await fetch('https://api.openai.com/v1/realtime/calls', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': crypto.createHash('sha256').update(request.deviceId).digest('hex') }, body: form });
+    const answerSdp = await provider.text(); const location = provider.headers.get('location'); const callId = location?.split('/').pop();
+    if (!provider.ok || !callId || !answerSdp) { console.error('OpenAI Realtime session failed', { status: provider.status, body: answerSdp.slice(0, 300) }); return response.status(502).json({ error: 'OpenAI Realtime refuse temporairement la session.' }); }
+    realtimeSessions.set(billingSessionId, link); billing.learningSessionId = learning?.id; billing.providerSessionId = callId; billing.providerSessionStartedAt = now(); billing.updatedAt = now(); persist();
+    try { await attachRealtimeSideband(link, callId); } catch (error) { closeRealtimeSession(billingSessionId, 'ended_provider_error'); console.error('OpenAI Realtime sideband failed', error instanceof Error ? error.message : String(error)); return response.status(502).json({ error: 'Canal de contrôle OpenAI indisponible.' }); }
     realtimeTimers.set(billingSessionId, setTimeout(() => closeRealtimeSession(billingSessionId, 'ended_timeout'), maxSessionMs));
-    return response.status(201).json({ value: data.value, expires_at: data.expires_at, model: realtimeModel, maxDurationSeconds: Math.floor(maxSessionMs / 1000) });
-  } catch (error) { console.error('OpenAI Realtime token request failed', error instanceof Error ? error.message : String(error)); return response.status(502).json({ error: 'Connexion OpenAI Realtime impossible.' }); }
+    return response.status(201).json({ sdp: answerSdp, model: realtimeModel, maxDurationSeconds: Math.floor(maxSessionMs / 1000) });
+  } catch (error) { console.error('OpenAI Realtime connection failed', error instanceof Error ? error.message : String(error)); return response.status(502).json({ error: 'Connexion OpenAI Realtime impossible.' }); }
 });
 
-app.post('/v1/realtime/:sessionId/tool', requireDevice, (request, response) => {
-  const link = realtimeSessions.get(request.params.sessionId); if (!link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' });
-  const args = request.body?.arguments || {}; const learning = link.learningSessionId ? learningSession(link.learningSessionId, link.device) : null;
-  if (request.body?.name === 'record_assessment_answer') {
-    if (!learning?.evaluation?.active || typeof args.success !== 'boolean' || typeof args.explanation !== 'string') return response.status(422).json({ error: 'Réponse d’évaluation invalide.' });
-    const questionCount = Math.min(5, learning.evaluation.questionCount + 1); const consecutiveSuccesses = args.success ? learning.evaluation.consecutiveSuccesses + 1 : 0; const completed = questionCount === 5;
-    learning.evaluation = { active: !completed, questionCount, consecutiveSuccesses, completed, passed: completed && consecutiveSuccesses === 5, feedback: args.explanation.slice(0, 600), updatedAt: now() }; updateLearningSummary(learning); return response.json({ evaluation: learning.evaluation, message: 'Réponse vocale enregistrée.' });
-  }
-  if (request.body?.name === 'propose_passport_update') {
-    const proposal = { level: args.level, confidence: Number(args.confidence), evidence: String(args.evidence || '').slice(0, 800), nextExercise: String(args.next_exercise || '').slice(0, 400) };
-    if (!validProposal(proposal, link.level, learning?.evaluation)) return response.status(422).json({ error: 'Proposition pédagogique insuffisante ou saut de niveau interdit.' });
-    link.proposal = proposal; return response.json({ accepted_for_auto_update: true, message: 'Proposition validée pour la mise à jour locale du passeport.' });
-  }
-  return response.json({ skill: link.skill, current_level: link.level, latest_summary: learning?.summary || link.summary || 'Aucune évaluation enregistrée.', evaluation: learning?.evaluation, rule: 'Une progression requiert cinq réussites consécutives, vérifiées par Koxmos.' });
-});
-app.post('/v1/realtime/:sessionId/usage', requireDevice, (request, response) => {
-  const link = realtimeSessions.get(request.params.sessionId); if (!link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' });
-  const usage = request.body?.usage;
-  if (!usage || typeof usage !== 'object') return response.status(400).json({ error: 'Usage OpenAI invalide.' });
-  // The provider is the source of truth for token accounting. Store only the
-  // aggregate reported by its response event, never transcript content.
-  const input = Number(usage.input_tokens || 0); const output = Number(usage.output_tokens || 0);
-  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0 || input > 2_000_000 || output > 2_000_000) return response.status(400).json({ error: 'Usage OpenAI hors limite.' });
-  addLedger(request.deviceId, 'usage', 0, 'openai_realtime', { model: realtimeModel, sessionId: request.params.sessionId, inputTokens: input, outputTokens: output, inputTokenDetails: usage.input_token_details || undefined, outputTokenDetails: usage.output_token_details || undefined }); persist();
-  return response.status(204).end();
-});
 app.post('/v1/realtime/:sessionId/end', requireDevice, (request, response) => { const link = realtimeSessions.get(request.params.sessionId); if (!link || link.device !== request.deviceId) return response.status(404).json({ error: 'Session vocale introuvable.' }); return response.json(closeRealtimeSession(request.params.sessionId)); });
 
 app.get('/v1/wallet', requireDevice, (request, response) => response.json(publicWallet(request.deviceId)));
